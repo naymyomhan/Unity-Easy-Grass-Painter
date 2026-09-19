@@ -1,0 +1,43 @@
+# OS generated files
+[Dd]esktop.ini
+Thumbs.db
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*~
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.opendb
+*.VC.db
+.vs/
+*.csproj
+*.unityproj
+*.sln
+
+# Unity temporary files & caches
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+sysinfo.txt
+*.stackdump
+
+# Package exports
+*.unitypackage

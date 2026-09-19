@@ -1,0 +1,523 @@
+#pragma kernel CSMain
+#pragma kernel CSResetArgs
+
+struct SourcePoint
+{
+    float3 position;
+    float3 normal;
+    float2 size;    // relative scale: x = width scale, y = height scale
+    float4 color;
+};
+
+struct DrawVertex
+{
+    float3 positionWS;
+    float3 normalWS;
+    float2 uv;
+    float4 color;
+    float cutHeight;
+    float3 _pad;
+};
+
+StructuredBuffer<SourcePoint> _SourcePoints;
+StructuredBuffer<float> _CutBuffer;
+RWStructuredBuffer<DrawVertex> _DrawVertices;
+RWStructuredBuffer<uint> _DrawArgs;
+
+uint _TotalBlades;
+uint _MaxDrawVertices;
+uint _BladesPerClump;
+float _ClumpRadius;
+float _ClumpTilt;
+
+// GPU Frustum Culling
+float _EnableFrustumCulling;
+float4 _FrustumPlanes[6];
+float _CastShadows;
+
+// Blade properties (live per-layer)
+float _DefaultWidth;
+float _DefaultHeight;
+float _BottomWidth;
+float _BottomWidthVar;
+float _WidthVariation;
+float _HeightVariation;
+float _BladeForward;
+float _BladeCurve;
+float _UprightIntensity;
+float _NormalUpBlend;
+float4 _TopColor;
+float4 _BottomColor;
+
+// World-Space Noise Color Tint & Waves
+float _EnableColorNoise;
+float4 _NoiseTopColor;
+float4 _NoiseBottomColor;
+float _NoiseScale;
+float _NoiseContrast;
+float _EnableNoiseWindWaves;
+
+// World-Space Noise Height Variations & Waves
+float _EnableHeightNoise;
+float _HeightNoiseScale;
+float _HeightNoiseContrast;
+float _HeightNoiseIntensity;
+float _EnableHeightNoiseWaves;
+float _HeightWaveIntensity;
+
+// Blade Shape & Geometry
+int _BladeSegments;
+float _EnableSegmentLOD;
+float _SegmentLODStartDist;
+float _SegmentLODEndDist;
+int _MinSegmentCount;
+int _TipShape; // 0 = Pointed, 1 = Blunt
+float _TipWidth;
+float _BellyWidth;
+
+// Camera & Distance LOD
+float3 _CameraPositionWS;
+float _MinFadeDist;
+float _MaxFadeDist;
+
+// Wind properties
+float _WindStrength;
+float _WindSpeed;
+float _WindScale;
+float _WindElasticity;
+float _WindSmoothness;
+float3 _WindDirection;
+float _Time;
+
+// Interactor properties
+int _InteractorCount;
+float4 _Interactors[16]; // xyz = world pos, w = radius
+float4 _InteractorParams[16]; // x = radius, y = strength
+
+// -------------------------------------------------------------------------
+// Simplex 2D Noise Implementation (Stefan Gustavson / Ian McEwan)
+// -------------------------------------------------------------------------
+float3 mod289(float3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float2 mod289(float2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+float3 permute(float3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+
+float SimplexNoise2D(float2 v)
+{
+    const float4 C = float4(0.211324865405187,  // (3.0 - sqrt(3.0)) / 6.0
+                            0.366025403784439,  // 0.5 * (sqrt(3.0) - 1.0)
+                           -0.577350269189626,  // -1.0 + 2.0 * C.x
+                            0.024390243902439); // 1.0 / 41.0
+    float2 i  = floor(v + dot(v, C.yy));
+    float2 x0 = v -   i + dot(i, C.xx);
+
+    float2 i1 = (x0.x > x0.y) ? float2(1.0, 0.0) : float2(0.0, 1.0);
+    float4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+
+    i = mod289(i);
+    float3 p = permute(permute(i.y + float3(0.0, i1.y, 1.0))
+                     + i.x + float3(0.0, i1.x, 1.0));
+
+    float3 m = max(0.5 - float3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m;
+    m = m * m;
+
+    float3 x = 2.0 * frac(p * C.www) - 1.0;
+    float3 h = abs(x) - 0.5;
+    float3 ox = floor(x + 0.5);
+    float3 a0 = x - ox;
+
+    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+
+    float3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+}
+
+// -------------------------------------------------------------------------
+// Reset Indirect Arguments Kernel (GPU-side execution, 0 CPU sync)
+// -------------------------------------------------------------------------
+[numthreads(1, 1, 1)]
+void CSResetArgs(uint3 id : SV_DispatchThreadID)
+{
+    _DrawArgs[0] = 0; // vertexCountPerInstance (atomically populated in CSMain)
+    _DrawArgs[1] = 1; // instanceCount
+    _DrawArgs[2] = 0; // startVertexLocation
+    _DrawArgs[3] = 0; // startInstanceLocation
+}
+
+float GetBladeWidthFactor(float t, float bottomW, int tipShape, float tipW, float bellyW)
+{
+    float targetTipW = (tipShape == 1) ? max(0.05, tipW) : 0.0;
+    float baseW = lerp(bottomW, targetTipW, t);
+
+    // Belly width (fullness around t = 0.5)
+    float bellyCurve = 4.0 * t * (1.0 - t);
+    float widthWithBelly = baseW + bellyCurve * (bellyW - 1.0) * 0.4;
+
+    return max(0.0, widthWithBelly);
+}
+
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TotalBlades) return;
+
+    uint pointIdx = id.x / _BladesPerClump;
+    uint bladeInClump = id.x % _BladesPerClump;
+
+    SourcePoint src = _SourcePoints[pointIdx];
+    float3 rootPos = src.position;
+    float3 rootNormal = normalize(src.normal);
+    if (length(rootNormal) < 0.1) rootNormal = float3(0, 1, 0);
+
+    // 1. Distance culling against camera
+    float distToCam = distance(rootPos, _CameraPositionWS);
+    if (distToCam > _MaxFadeDist) return;
+
+    // 2. GPU Frustum Culling against 6 camera planes (with shadow caster margin)
+    if (_EnableFrustumCulling > 0.5)
+    {
+        float margin = (_CastShadows > 0.5) ? (_DefaultHeight * 2.5 + 2.5) : (_DefaultHeight * 1.5);
+        float boundingRadius = _ClumpRadius + margin;
+        bool inFrustum = true;
+        [unroll]
+        for (int p = 0; p < 6; p++)
+        {
+            if (dot(_FrustumPlanes[p].xyz, rootPos) + _FrustumPlanes[p].w < -boundingRadius)
+            {
+                inFrustum = false;
+                break;
+            }
+        }
+        if (!inFrustum) return;
+    }
+
+    // 3. Distance blade reduction in clump (LOD)
+    float distFade = 1.0 - saturate((distToCam - _MinFadeDist) / max(0.001, _MaxFadeDist - _MinFadeDist));
+    uint activeBlades = max(1, (uint)ceil(_BladesPerClump * distFade));
+    if (bladeInClump >= activeBlades) return;
+
+    // 4. Cutting data (MinionsArt style: -1 = uncut -> 99999.0 sentinel)
+    float cut = _CutBuffer[pointIdx];
+    float effectiveCut = (cut < -0.5) ? 99999.0 : cut;
+    bool isStubble = (cut > -0.5 && cut < (rootPos.y + 0.45));
+    float motionMult = isStubble ? 0.0 : 1.0;
+
+    // Hash based on root position
+    float hash = frac(sin(dot(rootPos.xz, float2(12.9898, 78.233))) * 43758.5453);
+
+    // 5. Geometry setup with Stochastic Dynamic Segment LOD
+    uint numSegs = (uint)clamp(_BladeSegments, 1, 5);
+    if (_EnableSegmentLOD > 0.5 && numSegs > (uint)_MinSegmentCount)
+    {
+        float lodFactor = saturate((distToCam - _SegmentLODStartDist) / max(0.001, _SegmentLODEndDist - _SegmentLODStartDist));
+        // Stochastic dither across the transition zone eliminates visible popping seams
+        float dither = (hash - 0.5) * 0.25;
+        float steppedLOD = saturate(lodFactor + dither);
+        numSegs = (uint)round(lerp((float)numSegs, (float)_MinSegmentCount, steppedLOD));
+        numSegs = clamp(numSegs, (uint)_MinSegmentCount, (uint)_BladeSegments);
+    }
+    uint vertsPerBlade = numSegs * 6;
+
+    // Atomic vertex allocation in indirect draw buffer
+    uint baseIdx;
+    InterlockedAdd(_DrawArgs[0], vertsPerBlade, baseIdx);
+    if (baseIdx + vertsPerBlade > _MaxDrawVertices) return;
+
+    // Surface tangent basis
+    float3 seedDir = float3(cos(hash * 6.2831853), 0.0, sin(hash * 6.2831853));
+    float3 tangent = normalize(cross(rootNormal, seedDir));
+    if (length(tangent) < 0.001) tangent = normalize(cross(rootNormal, float3(0, 0, 1)));
+    float3 bitangent = normalize(cross(rootNormal, tangent));
+
+    // Clump positioning and outward flare
+    float3 bladeRoot = rootPos;
+    float3 bladeFacing = tangent;
+
+    // Upright growth alignment: blend between surface normal and world up (0, 1, 0)
+    float3 worldUp = float3(0, 1, 0);
+    float3 growthNormal = normalize(lerp(rootNormal, worldUp, saturate(_UprightIntensity)));
+    if (length(growthNormal) < 0.001) growthNormal = worldUp;
+
+    float3 bladeNormal = growthNormal;
+    float bladeHeightScale = 1.0;
+
+    if (_BladesPerClump > 1)
+    {
+        float angleStep = 6.2831853 / float(_BladesPerClump);
+        float clumpAngle = float(bladeInClump) * angleStep + (hash * 3.14159);
+
+        float rFrac = (bladeInClump == 0) ? 0.0 : 1.0;
+        float r = _ClumpRadius * rFrac * (0.75 + 0.35 * frac(hash * 7.31 + bladeInClump * 0.37));
+
+        float3 clumpOffset = (tangent * cos(clumpAngle) + bitangent * sin(clumpAngle)) * r;
+        bladeRoot += clumpOffset;
+
+        float3 outwardDir = (r > 0.001) ? normalize(clumpOffset) : tangent;
+        bladeFacing = normalize(lerp(tangent, outwardDir, _ClumpTilt));
+        bladeNormal = normalize(growthNormal + outwardDir * (_ClumpTilt * 0.5));
+        bladeHeightScale = (bladeInClump == 0) ? 1.05 : (0.85 + 0.25 * frac(hash * 3.17 + bladeInClump * 0.41));
+    }
+
+    float rootSink = 0.06 * _DefaultHeight;
+    bladeRoot -= rootNormal * rootSink;
+
+    // Blade dimensions with smooth distance width taper
+    float bladeHeight = _DefaultHeight * src.size.y * bladeHeightScale * (1.0 + (hash - 0.5) * _HeightVariation);
+    bladeHeight += rootSink;
+
+    // --- 6. OPTIMIZED NOISE: Sample Height Noise & Waves ONCE per blade ---
+    if (_EnableHeightNoise > 0.5)
+    {
+        float2 hCoord = rootPos.xz * _HeightNoiseScale + float2(47.13, 89.27);
+        float rawHNoise = SimplexNoise2D(hCoord);
+        float hNoise01 = saturate(rawHNoise * 0.5 + 0.5);
+        float hContrasted = saturate((hNoise01 - 0.5) * _HeightNoiseContrast + 0.5);
+        float heightMult = lerp(1.0 - _HeightNoiseIntensity * 0.5, 1.0 + _HeightNoiseIntensity * 0.5, hContrasted);
+        bladeHeight *= max(0.05, heightMult);
+    }
+
+    if (_EnableHeightNoiseWaves > 0.5 && _HeightWaveIntensity > 0.001)
+    {
+        float3 windDirHW = normalize(_WindDirection + float3(0.001, 0, 0.001));
+        float2 waveCoord = rootPos.xz * (_WindScale * 0.15) - windDirHW.xz * (_Time * _WindSpeed * 0.35);
+        float rawHWave = SimplexNoise2D(waveCoord);
+        float hWave01 = saturate(rawHWave * 0.5 + 0.5);
+        float hWaveMult = lerp(1.0 - _HeightWaveIntensity * 0.4, 1.0 + _HeightWaveIntensity * 0.25, hWave01);
+        bladeHeight *= max(0.1, hWaveMult);
+    }
+
+    // --- 7. OPTIMIZED NOISE: Sample Color Noise ONCE per blade ---
+    float colorNoiseContrasted = 0.0;
+    if (_EnableColorNoise > 0.5)
+    {
+        float rawCNoise = SimplexNoise2D(rootPos.xz * _NoiseScale);
+        float noise01 = saturate(rawCNoise * 0.5 + 0.5);
+        colorNoiseContrasted = saturate((noise01 - 0.5) * _NoiseContrast + 0.5);
+    }
+
+    // --- 8. OPTIMIZED WIND: Compute Wind Wave and Noise ONCE per blade ---
+    float3 windDir = normalize(_WindDirection + float3(0.001, 0, 0.001));
+
+    // 1. Base sway with Asymmetric Easing and Elastic Spring Recoil
+    float basePhase = _Time * _WindSpeed * 1.2 + dot(rootPos.xz, windDir.xz) * _WindScale + hash * 0.5;
+    float rawSway = sin(basePhase);
+
+    // Elastic secondary harmonic (spring bounce past equilibrium to avoid sudden halt/stiffness)
+    float springBounce = sin(basePhase * 2.0 - 1.2) * (0.22 * _WindElasticity);
+    float combinedSway = rawSway + springBounce;
+
+    // Normalize from [-1.22, 1.22] to [0, 1]
+    float sway01 = saturate((combinedSway + 1.22) / 2.44);
+
+    // Soft recovery easing at rest pose (eliminates sudden turnaround halt / snap)
+    float easedSway = lerp(sway01, smoothstep(0.0, 1.0, sway01), _WindSmoothness);
+    float baseDisplacement = lerp(0.12, 0.85, easedSway);
+
+    // 2. Additive sweeping gust noise waves with smooth continuous falloff (no hard cutoff)
+    float gustPush = 0.0;
+    if (_EnableNoiseWindWaves > 0.5)
+    {
+        float2 gustCoord = rootPos.xz * (_WindScale * 0.18) - windDir.xz * (_Time * _WindSpeed * 0.45);
+        float rawGust = SimplexNoise2D(gustCoord);
+        float gust01 = saturate(rawGust * 0.5 + 0.5);
+        // Continuous non-linear power curve: smooth arrival & departure
+        gustPush = pow(gust01, 2.4) * 1.5;
+    }
+
+    // 3. Subtle cross-wind turbulence perpendicular to main wind vector
+    float3 crossWind = float3(-windDir.z, 0.0, windDir.x);
+    float crossPhase = _Time * _WindSpeed * 1.5 + dot(rootPos.xz, crossWind.xz) * _WindScale * 1.2 + hash * 3.14159;
+    float crossSway = sin(crossPhase) * 0.12;
+
+    float forwardDisplacement = baseDisplacement + gustPush;
+    float3 windOffset = (windDir * forwardDisplacement + crossWind * crossSway) * (_WindStrength * motionMult);
+
+    // --- 9. OPTIMIZED INTERACTORS: Check Interactors ONCE per blade ---
+    float3 interactorPush = float3(0, 0, 0);
+    if (_InteractorCount > 0 && motionMult > 0.001)
+    {
+        for (int i = 0; i < _InteractorCount; i++)
+        {
+            float3 interPos = _Interactors[i].xyz;
+            float interRadius = _InteractorParams[i].x;
+            float interStrength = _InteractorParams[i].y;
+
+            if (interStrength > 0.001 && interRadius > 0.01)
+            {
+                float2 xzOffset = bladeRoot.xz - interPos.xz;
+                float xzDist = length(xzOffset);
+                float yDist = abs(bladeRoot.y - (interPos.y - 0.5));
+
+                if (xzDist < interRadius && yDist < 2.5)
+                {
+                    float2 xzDir = (xzDist > 0.001) ? normalize(xzOffset) : float2(0, 1);
+                    float factor = 1.0 - (xzDist / interRadius);
+                    float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.75);
+                    float3 pushDir = normalize(float3(xzDir.x, -0.35, xzDir.y));
+                    interactorPush += pushDir * pushAmount;
+                }
+            }
+        }
+    }
+
+    float bladeWidth = (_DefaultWidth * src.size.x * (1.0 + (hash - 0.5) * _WidthVariation)) * saturate(distFade * 2.0);
+
+    // Tangent coordinate frame for cross-section
+    float3 forward = normalize(bladeFacing);
+    float3 right = normalize(cross(bladeNormal, forward));
+    if (length(right) < 0.001) right = normalize(cross(bladeNormal, float3(1, 0, 0)));
+    forward = normalize(cross(right, bladeNormal));
+
+    // Effective bottom width with hash variation
+    float rootTaperRand = (hash - 0.5) * _BottomWidthVar;
+    float effectiveBottomWidth = clamp(_BottomWidth + rootTaperRand, 0.0, 2.0);
+
+    // Upward blended normal base
+    float3 upNorm = float3(0, 1, 0);
+    float3 smoothNorm = normalize(lerp(rootNormal, upNorm, 0.6));
+
+    // --- 10. PRECALCULATE SPINE POSITIONS & COLORS (numSegs + 1 points, max 6) ---
+    float3 spine[6];
+    float4 spineCol[6];
+
+    [unroll]
+    for (uint p = 0; p <= numSegs; p++)
+    {
+        float t = float(p) / float(numSegs);
+        float nominalArc = t * bladeHeight;
+
+        // Desired horizontal displacement (curvature + wind displacement + player push)
+        float fCurve = pow(saturate(t), _BladeCurve) * (_BladeForward * bladeHeight);
+        float3 totalDisp = forward * fCurve
+                         + windOffset * (t * t)
+                         + interactorPush * (t * 0.7 + t * t * 0.3);
+
+        // Lateral displacement strictly perpendicular to bladeNormal
+        float3 lateralDisp = totalDisp - bladeNormal * dot(totalDisp, bladeNormal);
+        float lateralDist = length(lateralDisp);
+
+        // Blade Length Conservation: blade cannot stretch past its nominal arc length
+        float maxLateral = nominalArc * 0.98; // retain slight vertical clearance for numerical stability
+        if (lateralDist > maxLateral)
+        {
+            lateralDisp = (lateralDist > 1e-5) ? (lateralDisp / lateralDist * maxLateral) : float3(0, 0, 0);
+            lateralDist = maxLateral;
+        }
+
+        // By Pythagorean theorem: vertHeight^2 + lateralDist^2 == nominalArc^2
+        // As wind bends the blade sideways, vertical height smoothly drops to ground without stretching
+        float vertHeight = sqrt(max(0.0001, nominalArc * nominalArc - lateralDist * lateralDist));
+        spine[p] = bladeRoot + bladeNormal * vertHeight + lateralDisp;
+
+        // Color interpolation with pre-sampled noise
+        float4 baseC = lerp(_BottomColor, _TopColor, saturate(t));
+        float4 noiseC = lerp(_NoiseBottomColor, _NoiseTopColor, saturate(t));
+        spineCol[p] = lerp(baseC, noiseC, colorNoiseContrasted);
+    }
+
+    // --- 11. DYNAMIC SEGMENTS QUAD ASSEMBLY ---
+    [loop]
+    for (uint s = 0; s < numSegs; s++)
+    {
+        float tA = float(s) / float(numSegs);
+        float tB = float(s + 1) / float(numSegs);
+
+        float3 segA = spine[s];
+        float3 segB = spine[s + 1];
+
+        float wFactorA = GetBladeWidthFactor(tA, effectiveBottomWidth, _TipShape, _TipWidth, _BellyWidth);
+        float wFactorB = GetBladeWidthFactor(tB, effectiveBottomWidth, _TipShape, _TipWidth, _BellyWidth);
+
+        float halfWA = bladeWidth * 0.5 * wFactorA;
+        float halfWB = bladeWidth * 0.5 * wFactorB;
+
+        float3 p0 = segA - right * halfWA; // Bottom-Left
+        float3 p1 = segA + right * halfWA; // Bottom-Right
+        if (s == 0)
+        {
+            p0.y = min(p0.y, bladeRoot.y - 0.05);
+            p1.y = min(p1.y, bladeRoot.y - 0.05);
+        }
+
+        float3 p2; // Top-Left
+        float3 p3; // Top-Right
+
+        if (s == numSegs - 1 && _TipShape == 0) // Pointed apex at the very top segment
+        {
+            p2 = segB; // Apex point
+            p3 = segB; // Apex point
+        }
+        else
+        {
+            p2 = segB - right * halfWB;
+            p3 = segB + right * halfWB;
+        }
+
+        // Geometric normal of this segment quad
+        float3 crossVec = cross(p2 - p0, p1 - p0);
+        float lenSq = dot(crossVec, crossVec);
+        float3 geomN = (lenSq > 1e-6) ? (crossVec * rsqrt(lenSq)) : smoothNorm;
+        if (dot(geomN, forward) < 0.0) geomN = -geomN;
+        float3 n = normalize(lerp(geomN, smoothNorm, _NormalUpBlend));
+
+        float uv_yA = (s == 0) ? (-rootSink / max(bladeHeight, 0.001)) : tA;
+        float uv_yB = tB;
+
+        float4 colA = spineCol[s];
+        float4 colB = spineCol[s + 1];
+
+        float uv_xA_L = 0.0;
+        float uv_xA_R = 1.0;
+        float uv_xB_L = (s == numSegs - 1 && _TipShape == 0) ? 0.5 : 0.0;
+        float uv_xB_R = (s == numSegs - 1 && _TipShape == 0) ? 0.5 : 1.0;
+
+        uint segBase = baseIdx + s * 6;
+
+        // Triangle 0: p0, p2, p1
+        _DrawVertices[segBase + 0].positionWS = p0;
+        _DrawVertices[segBase + 0].normalWS   = n;
+        _DrawVertices[segBase + 0].uv         = float2(uv_xA_L, uv_yA);
+        _DrawVertices[segBase + 0].color      = colA;
+        _DrawVertices[segBase + 0].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 0]._pad       = float3(0, 0, 0);
+
+        _DrawVertices[segBase + 1].positionWS = p2;
+        _DrawVertices[segBase + 1].normalWS   = n;
+        _DrawVertices[segBase + 1].uv         = float2(uv_xB_L, uv_yB);
+        _DrawVertices[segBase + 1].color      = colB;
+        _DrawVertices[segBase + 1].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 1]._pad       = float3(0, 0, 0);
+
+        _DrawVertices[segBase + 2].positionWS = p1;
+        _DrawVertices[segBase + 2].normalWS   = n;
+        _DrawVertices[segBase + 2].uv         = float2(uv_xA_R, uv_yA);
+        _DrawVertices[segBase + 2].color      = colA;
+        _DrawVertices[segBase + 2].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 2]._pad       = float3(0, 0, 0);
+
+        // Triangle 1: p1, p2, p3
+        _DrawVertices[segBase + 3].positionWS = p1;
+        _DrawVertices[segBase + 3].normalWS   = n;
+        _DrawVertices[segBase + 3].uv         = float2(uv_xA_R, uv_yA);
+        _DrawVertices[segBase + 3].color      = colA;
+        _DrawVertices[segBase + 3].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 3]._pad       = float3(0, 0, 0);
+
+        _DrawVertices[segBase + 4].positionWS = p2;
+        _DrawVertices[segBase + 4].normalWS   = n;
+        _DrawVertices[segBase + 4].uv         = float2(uv_xB_L, uv_yB);
+        _DrawVertices[segBase + 4].color      = colB;
+        _DrawVertices[segBase + 4].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 4]._pad       = float3(0, 0, 0);
+
+        _DrawVertices[segBase + 5].positionWS = p3;
+        _DrawVertices[segBase + 5].normalWS   = n;
+        _DrawVertices[segBase + 5].uv         = float2(uv_xB_R, uv_yB);
+        _DrawVertices[segBase + 5].color      = colB;
+        _DrawVertices[segBase + 5].cutHeight  = effectiveCut;
+        _DrawVertices[segBase + 5]._pad       = float3(0, 0, 0);
+    }
+}

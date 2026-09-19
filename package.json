@@ -1,0 +1,24 @@
+{
+  "name": "com.naymyomhan.easygrasspainter",
+  "version": "1.0.0",
+  "displayName": "Easy Grass Painter",
+  "description": "High-performance GPU-driven stylized grass system for Unity Universal Render Pipeline (URP). Features procedural compute shader blade generation, real-time cutting, player interaction, distance culling, wind waves, and in-editor painting tools.",
+  "unity": "2022.3",
+  "keywords": [
+    "grass",
+    "foliage",
+    "stylized",
+    "compute-shader",
+    "gpu-instancing",
+    "urp",
+    "zelda",
+    "ghibli",
+    "painter"
+  ],
+  "author": {
+    "name": "Nay Myo Mhan"
+  },
+  "dependencies": {
+    "com.unity.render-pipelines.universal": "14.0.0"
+  }
+}

@@ -1,0 +1,73 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f83442afb461de842830d4ec1b6964a0, type: 3}
+  m_Name: Meadow_Field_Grass
+  m_EditorClassIdentifier: 
+  typeName: Meadow Field Grass
+  renderMode: 0
+  bladeTexture: {fileID: 0}
+  alphaCutoff: 0.5
+  blendWithBladeColor: 1
+  topColor: {r: 0.52, g: 0.80, b: 0.25, a: 1}
+  bottomColor: {r: 0.05, g: 0.35, b: 0.08, a: 1}
+  enableColorNoise: 1
+  noiseTopColor: {r: 0.72, g: 0.85, b: 0.35, a: 1}
+  noiseBottomColor: {r: 0.18, g: 0.68, b: 0.12, a: 1}
+  noiseScale: 0.03
+  noiseContrast: 1.8
+  enableNoiseWindWaves: 1
+  enableHeightNoise: 1
+  heightNoiseScale: 0.06
+  heightNoiseContrast: 1.6
+  heightNoiseIntensity: 0.8
+  enableHeightNoiseWaves: 0
+  heightWaveIntensity: 0.5
+  bladeSegments: 3
+  tipShape: 1
+  tipWidth: 0.45
+  bellyWidth: 0.75
+  defaultWidth: 0.15
+  defaultHeight: 1.1
+  bottomWidth: 0.65
+  bottomWidthVariation: 0.3
+  widthVariation: 0.35
+  heightVariation: 0.3
+  bladeForward: 0.2
+  bladeCurve: 2.4
+  uprightIntensity: 0.85
+  bladesPerClump: 6
+  clumpRadius: 0.15
+  clumpTilt: 0.55
+  customMesh: {fileID: 0}
+  customMaterial: {fileID: 0}
+  scaleRange: {x: 0.8, y: 1.2}
+  alignToNormal: 1
+  randomYRotation: 1
+  cutParticlePrefab: {fileID: 556821620511030163, guid: 03361fd16a511734480bbce8494253f8, type: 3}
+  normalUpBlend: 0.85
+  translucency: 0.55
+  edgeHighlight: 0.08
+  castShadows: 0
+  shadowCastDensity: 0.45
+  bladeShadowStrength: 0.2
+  windStrength: 0.35
+  windSpeed: 2.2
+  windScale: 0.95
+  windElasticity: 0.5
+  windSmoothness: 0.5
+  minFadeDistance: 50
+  maxDrawDistance: 100
+  normalLimit: 0.45
+  enableSegmentLOD: 1
+  segmentLODStartDist: 20
+  segmentLODEndDist: 50
+  minSegmentCount: 1
