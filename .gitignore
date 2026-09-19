@@ -10,9 +10,12 @@ ehthumbs.db
 
 # IDE and Editor files
 .idea/
-.vscode/
 *.swp
 *~
+!Documentation~
+!Documentation~/**
+!Samples~
+!Samples~/**
 *.suo
 *.user
 *.userprefs
