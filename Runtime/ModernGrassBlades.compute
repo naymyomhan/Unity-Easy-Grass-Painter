@@ -347,7 +347,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             float3 interPos = _Interactors[i].xyz;
             float interRadius = _InteractorParams[i].x;
             float interStrength = _InteractorParams[i].y;
-            float2 moveDir = _InteractorParams[i].zw;
+            float2 moveVel = _InteractorParams[i].zw;
+            float moveSpeed = length(moveVel);
 
             if (interStrength > 0.001 && interRadius > 0.01)
             {
@@ -358,35 +359,39 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 if (yDist < 2.5)
                 {
                     float2 xzDir = (xzDist > 0.001) ? (xzOffset / xzDist) : float2(0, 1);
-                    
-                    // Behind moving player, release/wake zone extends further
-                    float moveLen = length(moveDir);
-                    float isBehind = (moveLen > 0.1) ? saturate(-dot(xzDir, moveDir)) : 0.0;
-                    float wakeExtend = 0.35 + isBehind * 0.35; // extends 35% to 70% beyond radius
-                    float maxDist = interRadius * (1.0 + wakeExtend);
 
+                    // 1. Direct Contact Push (while blade is inside interactor radius)
+                    // Firm and stable push - NO vibration while standing or under contact!
                     if (xzDist < interRadius)
                     {
-                        // Direct push: blade is pressed away and downward
                         float factor = 1.0 - (xzDist / interRadius);
                         float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.85);
                         float3 pushDir = normalize(float3(xzDir.x, -0.4, xzDir.y));
                         interactorPush += pushDir * pushAmount;
-
-                        // Subtle spring recoil vibration near outer perimeter of contact
-                        if (_ElasticOscillation > 0.01 && factor < 0.4)
-                        {
-                            float edgeT = 1.0 - (factor / 0.4);
-                            float wobble = sin(_Time * 20.0 + hash * 6.283) * edgeT * interStrength * 0.25 * _ElasticOscillation;
-                            interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
-                        }
                     }
-                    else if (xzDist < maxDist && _ElasticOscillation > 0.01)
+                    // 2. Spring Release Wobble
+                    // Only triggers when:
+                    // a) Player is actively moving (moveSpeed > 0.08)
+                    // b) Blade is BEHIND the player's movement direction (just released)
+                    // c) Blade is in the release wake zone just outside the contact radius
+                    else if (moveSpeed > 0.08 && _ElasticOscillation > 0.01)
                     {
-                        // Spring release wobble: blades oscillate and settle as player moves away
-                        float releaseT = 1.0 - (xzDist - interRadius) / (maxDist - interRadius);
-                        float wobble = sin(_Time * 20.0 + hash * 6.283) * releaseT * interStrength * 0.35 * _ElasticOscillation;
-                        interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                        float2 moveHeading = moveVel / moveSpeed;
+                        float behindDot = -dot(xzDir, moveHeading);
+
+                        if (behindDot > 0.05)
+                        {
+                            float wakeExtend = interRadius * (0.15 + 0.45 * saturate(moveSpeed / 2.5)) * behindDot;
+                            float maxDist = interRadius + wakeExtend;
+
+                            if (xzDist < maxDist)
+                            {
+                                float releaseT = 1.0 - (xzDist - interRadius) / wakeExtend;
+                                float decay = releaseT * releaseT;
+                                float wobble = sin(_Time * 20.0 + hash * 6.283) * decay * interStrength * 0.35 * _ElasticOscillation;
+                                interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                            }
+                        }
                     }
                 }
             }
@@ -433,7 +438,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float maxLateral = nominalArc * 0.98; // retain slight vertical clearance for numerical stability
         if (lateralDist > maxLateral)
         {
-            lateralDisp = (lateralDist > 1e-5) ? (lateralDisp / lateralDist * maxLateral) : float3(0, 0, 0);
+            lateralDisp = lateralDisp / max(1e-5, lateralDist) * maxLateral;
             lateralDist = maxLateral;
         }
 

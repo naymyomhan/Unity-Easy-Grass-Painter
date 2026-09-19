@@ -598,7 +598,7 @@ namespace ModernGrassTool
                     {
                         Vector3 pos = inter.transform.position;
                         _interactorArray[interactorCount] = new Vector4(pos.x, pos.y, pos.z, inter.radius);
-                        _interactorParams[interactorCount] = new Vector4(inter.radius, inter.strength, inter.moveDirection.x, inter.moveDirection.y);
+                        _interactorParams[interactorCount] = new Vector4(inter.radius, inter.strength, inter.moveDirection.x * inter.currentSpeed, inter.moveDirection.y * inter.currentSpeed);
                         interactorCount++;
                     }
                 }

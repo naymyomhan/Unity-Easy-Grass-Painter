@@ -21,7 +21,11 @@ namespace ModernGrassTool
         [HideInInspector]
         public Vector2 moveDirection = Vector2.zero;
 
+        [HideInInspector]
+        public float currentSpeed = 0f;
+
         private Vector3 _lastPos;
+        private float _smoothedSpeed = 0f;
 
         private void OnEnable()
         {
@@ -30,11 +34,17 @@ namespace ModernGrassTool
                 ActiveInteractors.Add(this);
             }
             _lastPos = transform.position;
+            _smoothedSpeed = 0f;
+            currentSpeed = 0f;
+            moveDirection = Vector2.zero;
         }
 
         private void OnDisable()
         {
             ActiveInteractors.Remove(this);
+            _smoothedSpeed = 0f;
+            currentSpeed = 0f;
+            moveDirection = Vector2.zero;
         }
 
         private void OnDestroy()
@@ -45,10 +55,28 @@ namespace ModernGrassTool
         private void Update()
         {
             Vector3 curPos = transform.position;
-            Vector3 delta = curPos - _lastPos;
-            if (delta.sqrMagnitude > 0.0001f)
+            float dt = Application.isPlaying ? Time.deltaTime : 0.016f;
+            if (dt > 0.0001f)
             {
-                moveDirection = new Vector2(delta.x, delta.z).normalized;
+                Vector3 delta = curPos - _lastPos;
+                Vector2 xzDelta = new Vector2(delta.x, delta.z);
+                float instantSpeed = xzDelta.magnitude / dt;
+
+                if (instantSpeed > 0.05f)
+                {
+                    moveDirection = xzDelta.normalized;
+                    _smoothedSpeed = Mathf.Lerp(_smoothedSpeed, Mathf.Clamp(instantSpeed, 0f, 6f), dt * 10f);
+                }
+                else
+                {
+                    _smoothedSpeed = Mathf.MoveTowards(_smoothedSpeed, 0f, dt * 4f);
+                    if (_smoothedSpeed <= 0.01f)
+                    {
+                        _smoothedSpeed = 0f;
+                        moveDirection = Vector2.zero;
+                    }
+                }
+                currentSpeed = _smoothedSpeed;
             }
             _lastPos = curPos;
         }

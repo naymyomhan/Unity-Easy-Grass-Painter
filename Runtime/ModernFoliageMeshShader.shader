@@ -124,7 +124,8 @@ Shader "ModernGrassTool/FoliageMeshShader"
                         float3 interPos = _Interactors[i].xyz;
                         float interRadius = _InteractorParams[i].x;
                         float interStrength = _InteractorParams[i].y;
-                        float2 moveDir = _InteractorParams[i].zw;
+                        float2 moveVel = _InteractorParams[i].zw;
+                        float moveSpeed = length(moveVel);
 
                         if (interStrength > 0.001 && interRadius > 0.01)
                         {
@@ -135,30 +136,36 @@ Shader "ModernGrassTool/FoliageMeshShader"
                             if (yDist < 2.5)
                             {
                                 float2 xzDir = (xzDist > 0.001) ? (xzOffset / xzDist) : float2(0, 1);
-                                float moveLen = length(moveDir);
-                                float isBehind = (moveLen > 0.1) ? saturate(-dot(xzDir, moveDir)) : 0.0;
-                                float wakeExtend = 0.35 + isBehind * 0.35;
-                                float maxDist = interRadius * (1.0 + wakeExtend);
 
+                                // 1. Direct Contact Push (while inside player radius)
+                                // Firm and stable - NO vibration while standing or under contact!
                                 if (xzDist < interRadius)
                                 {
                                     float factor = 1.0 - (xzDist / interRadius);
                                     float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.85);
                                     float3 pushDir = normalize(float3(xzDir.x, -0.4, xzDir.y));
                                     interactorPush += pushDir * pushAmount;
-
-                                    if (_ElasticOscillation > 0.01 && factor < 0.4)
-                                    {
-                                        float edgeT = 1.0 - (factor / 0.4);
-                                        float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * edgeT * interStrength * 0.25 * _ElasticOscillation;
-                                        interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
-                                    }
                                 }
-                                else if (xzDist < maxDist && _ElasticOscillation > 0.01)
+                                // 2. Spring Release Wobble
+                                // Only triggers behind moving player upon release
+                                else if (moveSpeed > 0.08 && _ElasticOscillation > 0.01)
                                 {
-                                    float releaseT = 1.0 - (xzDist - interRadius) / (maxDist - interRadius);
-                                    float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * releaseT * interStrength * 0.35 * _ElasticOscillation;
-                                    interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                                    float2 moveHeading = moveVel / moveSpeed;
+                                    float behindDot = -dot(xzDir, moveHeading);
+
+                                    if (behindDot > 0.05)
+                                    {
+                                        float wakeExtend = interRadius * (0.15 + 0.45 * saturate(moveSpeed / 2.5)) * behindDot;
+                                        float maxDist = interRadius + wakeExtend;
+
+                                        if (xzDist < maxDist)
+                                        {
+                                            float releaseT = 1.0 - (xzDist - interRadius) / wakeExtend;
+                                            float decay = releaseT * releaseT;
+                                            float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * decay * interStrength * 0.35 * _ElasticOscillation;
+                                            interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -356,7 +363,8 @@ Shader "ModernGrassTool/FoliageMeshShader"
                         float3 interPos = _Interactors[i].xyz;
                         float interRadius = _InteractorParams[i].x;
                         float interStrength = _InteractorParams[i].y;
-                        float2 moveDir = _InteractorParams[i].zw;
+                        float2 moveVel = _InteractorParams[i].zw;
+                        float moveSpeed = length(moveVel);
 
                         if (interStrength > 0.001 && interRadius > 0.01)
                         {
@@ -367,30 +375,36 @@ Shader "ModernGrassTool/FoliageMeshShader"
                             if (yDist < 2.5)
                             {
                                 float2 xzDir = (xzDist > 0.001) ? (xzOffset / xzDist) : float2(0, 1);
-                                float moveLen = length(moveDir);
-                                float isBehind = (moveLen > 0.1) ? saturate(-dot(xzDir, moveDir)) : 0.0;
-                                float wakeExtend = 0.35 + isBehind * 0.35;
-                                float maxDist = interRadius * (1.0 + wakeExtend);
 
+                                // 1. Direct Contact Push (while inside player radius)
+                                // Firm and stable - NO vibration while standing or under contact!
                                 if (xzDist < interRadius)
                                 {
                                     float factor = 1.0 - (xzDist / interRadius);
                                     float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.85);
                                     float3 pushDir = normalize(float3(xzDir.x, -0.4, xzDir.y));
                                     interactorPush += pushDir * pushAmount;
-
-                                    if (_ElasticOscillation > 0.01 && factor < 0.4)
-                                    {
-                                        float edgeT = 1.0 - (factor / 0.4);
-                                        float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * edgeT * interStrength * 0.25 * _ElasticOscillation;
-                                        interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
-                                    }
                                 }
-                                else if (xzDist < maxDist && _ElasticOscillation > 0.01)
+                                // 2. Spring Release Wobble
+                                // Only triggers behind moving player upon release
+                                else if (moveSpeed > 0.08 && _ElasticOscillation > 0.01)
                                 {
-                                    float releaseT = 1.0 - (xzDist - interRadius) / (maxDist - interRadius);
-                                    float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * releaseT * interStrength * 0.35 * _ElasticOscillation;
-                                    interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                                    float2 moveHeading = moveVel / moveSpeed;
+                                    float behindDot = -dot(xzDir, moveHeading);
+
+                                    if (behindDot > 0.05)
+                                    {
+                                        float wakeExtend = interRadius * (0.15 + 0.45 * saturate(moveSpeed / 2.5)) * behindDot;
+                                        float maxDist = interRadius + wakeExtend;
+
+                                        if (xzDist < maxDist)
+                                        {
+                                            float releaseT = 1.0 - (xzDist - interRadius) / wakeExtend;
+                                            float decay = releaseT * releaseT;
+                                            float wobble = sin(_Time.y * 20.0 + rootWS.x * 3.14 + rootWS.z * 1.57) * decay * interStrength * 0.35 * _ElasticOscillation;
+                                            interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
+                                        }
+                                    }
                                 }
                             }
                         }
