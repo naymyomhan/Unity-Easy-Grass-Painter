@@ -76,15 +76,7 @@ namespace ModernGrassTool
 
         [Header("Player & Object Interaction")]
         public bool enableInteraction = false;
-        [Range(0.1f, 3.0f)] public float interactionStrength = 1.0f;
-        [Range(0.0f, 1.0f)] public float interactionFlatten = 0.5f;
-        [Range(0.1f, 5.0f)] public float elasticRecoverySpeed = 1.5f;
-        [Range(0.0f, 1.0f)] public float elasticOscillation = 0.3f;
-
-        [Header("Footprint / Walking Trail Persistence")]
-        public bool enableTrailPersistence = false;
-        [Range(0.2f, 5.0f)] public float trailDuration = 1.5f;
-        [Range(0.1f, 1.0f)] public float trailDepression = 0.7f;
+        [Range(0.0f, 1.0f)] public float elasticOscillation = 0.5f;
 
         public void ApplyTo(GrassLayer layer)
         {
@@ -148,13 +140,7 @@ namespace ModernGrassTool
             layer.minSegmentCount = minSegmentCount;
 
             layer.enableInteraction = enableInteraction;
-            layer.interactionStrength = interactionStrength;
-            layer.interactionFlatten = interactionFlatten;
-            layer.elasticRecoverySpeed = elasticRecoverySpeed;
             layer.elasticOscillation = elasticOscillation;
-            layer.enableTrailPersistence = enableTrailPersistence;
-            layer.trailDuration = trailDuration;
-            layer.trailDepression = trailDepression;
 
             layer.isDirty = true;
         }
@@ -221,13 +207,7 @@ namespace ModernGrassTool
             minSegmentCount = layer.minSegmentCount;
 
             enableInteraction = layer.enableInteraction;
-            interactionStrength = layer.interactionStrength;
-            interactionFlatten = layer.interactionFlatten;
-            elasticRecoverySpeed = layer.elasticRecoverySpeed;
             elasticOscillation = layer.elasticOscillation;
-            enableTrailPersistence = layer.enableTrailPersistence;
-            trailDuration = layer.trailDuration;
-            trailDepression = layer.trailDepression;
         }
     }
 }

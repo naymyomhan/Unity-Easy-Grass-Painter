@@ -3,15 +3,6 @@ using UnityEngine;
 
 namespace ModernGrassTool
 {
-    public struct TrailNode
-    {
-        public Vector3 position;
-        public Vector2 moveDirection;
-        public float timeStamp;
-        public float radius;
-        public float strength;
-    }
-
     [ExecuteAlways]
     [AddComponentMenu("Modern Grass/Grass Interactor")]
     public class ModernGrassInteractor : MonoBehaviour
@@ -27,12 +18,10 @@ namespace ModernGrassTool
         [Range(0f, 2f)]
         public float strength = 0.5f;
 
-        public readonly List<TrailNode> trailHistory = new List<TrailNode>();
-        private Vector3 _lastTrailPos;
-        private bool _wasMoving = false;
-        private const float MinTrailDist = 0.12f;
-        private const int MaxTrailNodes = 24;
-        private const float MaxTrailLife = 12.0f;
+        [HideInInspector]
+        public Vector2 moveDirection = Vector2.zero;
+
+        private Vector3 _lastPos;
 
         private void OnEnable()
         {
@@ -40,81 +29,28 @@ namespace ModernGrassTool
             {
                 ActiveInteractors.Add(this);
             }
-            _lastTrailPos = transform.position;
-            _wasMoving = false;
-            trailHistory.Clear();
+            _lastPos = transform.position;
         }
 
         private void OnDisable()
         {
             ActiveInteractors.Remove(this);
-            trailHistory.Clear();
         }
 
         private void OnDestroy()
         {
             ActiveInteractors.Remove(this);
-            trailHistory.Clear();
         }
 
         private void Update()
         {
-            UpdateTrailHistory();
-        }
-
-        public void UpdateTrailHistory()
-        {
-            float currentTime = Application.isPlaying ? Time.time : (float)Time.realtimeSinceStartup;
             Vector3 curPos = transform.position;
-
-            float dist = Vector3.Distance(curPos, _lastTrailPos);
-            if (dist >= MinTrailDist)
+            Vector3 delta = curPos - _lastPos;
+            if (delta.sqrMagnitude > 0.0001f)
             {
-                Vector2 moveDir = new Vector2(curPos.x - _lastTrailPos.x, curPos.z - _lastTrailPos.z).normalized;
-
-                // Record previous resting position when moving away
-                if (!_wasMoving && trailHistory.Count < MaxTrailNodes)
-                {
-                    trailHistory.Insert(0, new TrailNode
-                    {
-                        position = _lastTrailPos,
-                        moveDirection = moveDir,
-                        timeStamp = currentTime,
-                        radius = radius,
-                        strength = strength
-                    });
-                }
-                _wasMoving = true;
-
-                trailHistory.Insert(0, new TrailNode
-                {
-                    position = curPos,
-                    moveDirection = moveDir,
-                    timeStamp = currentTime,
-                    radius = radius,
-                    strength = strength
-                });
-
-                while (trailHistory.Count > MaxTrailNodes)
-                {
-                    trailHistory.RemoveAt(trailHistory.Count - 1);
-                }
-
-                _lastTrailPos = curPos;
+                moveDirection = new Vector2(delta.x, delta.z).normalized;
             }
-            else if (dist < 0.01f)
-            {
-                _wasMoving = false;
-            }
-
-            // Prune expired nodes
-            for (int i = trailHistory.Count - 1; i >= 0; i--)
-            {
-                if (currentTime - trailHistory[i].timeStamp > MaxTrailLife)
-                {
-                    trailHistory.RemoveAt(i);
-                }
-            }
+            _lastPos = curPos;
         }
 
         private void OnDrawGizmosSelected()

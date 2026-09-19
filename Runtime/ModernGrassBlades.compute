@@ -89,23 +89,13 @@ float _WindSmoothness;
 float3 _WindDirection;
 float _Time;
 
-// Interactor & Elastic Push properties
+// Interactor & Elastic Spring Wobble properties
 float _EnableInteraction;
-float _InteractionStrength;
-float _InteractionFlatten;
-float _ElasticRecoverySpeed;
 float _ElasticOscillation;
-float _EnableTrailPersistence;
-float _TrailDuration;
-float _TrailDepression;
 
 int _InteractorCount;
 float4 _Interactors[16]; // xyz = world pos, w = radius
-float4 _InteractorParams[16]; // x = radius, y = strength
-
-int _TrailCount;
-float4 _TrailPoints[32]; // xyz = world pos, w = timestamp
-float4 _TrailParams[32]; // x = radius, y = strength, z = dir.x, w = dir.z
+float4 _InteractorParams[16]; // x = radius, y = strength, z = dir.x, w = dir.z
 
 // -------------------------------------------------------------------------
 // Simplex 2D Noise Implementation (Stefan Gustavson / Ian McEwan)
@@ -348,98 +338,55 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float forwardDisplacement = baseDisplacement + gustPush;
     float3 windOffset = (windDir * forwardDisplacement + crossWind * crossSway) * (_WindStrength * motionMult);
 
-    // --- 9. OPTIMIZED INTERACTORS & ELASTIC RECOVERY WAKE ---
+    // --- 9. INTERACTOR CONTACT & ELASTIC SPRING WOBBLE ---
     float3 interactorPush = float3(0, 0, 0);
-    if (_EnableInteraction > 0.5 && motionMult > 0.001)
+    if (_EnableInteraction > 0.5 && motionMult > 0.001 && _InteractorCount > 0)
     {
-        float minActiveDist = 999.0;
-
-        // 9a. Direct Active Interactors (Instant contact with moving/standing players)
-        if (_InteractorCount > 0)
+        for (int i = 0; i < _InteractorCount; i++)
         {
-            for (int i = 0; i < _InteractorCount; i++)
+            float3 interPos = _Interactors[i].xyz;
+            float interRadius = _InteractorParams[i].x;
+            float interStrength = _InteractorParams[i].y;
+            float2 moveDir = _InteractorParams[i].zw;
+
+            if (interStrength > 0.001 && interRadius > 0.01)
             {
-                float3 interPos = _Interactors[i].xyz;
-                float interRadius = _InteractorParams[i].x;
-                float interStrength = _InteractorParams[i].y * _InteractionStrength;
+                float2 xzOffset = bladeRoot.xz - interPos.xz;
+                float xzDist = length(xzOffset);
+                float yDist = abs(bladeRoot.y - (interPos.y - 0.5));
 
-                if (interStrength > 0.001 && interRadius > 0.01)
+                if (yDist < 2.5)
                 {
-                    float2 xzOffset = bladeRoot.xz - interPos.xz;
-                    float xzDist = length(xzOffset);
-                    float yDist = abs(bladeRoot.y - (interPos.y - 0.5));
+                    float2 xzDir = (xzDist > 0.001) ? (xzOffset / xzDist) : float2(0, 1);
+                    
+                    // Behind moving player, release/wake zone extends further
+                    float moveLen = length(moveDir);
+                    float isBehind = (moveLen > 0.1) ? saturate(-dot(xzDir, moveDir)) : 0.0;
+                    float wakeExtend = 0.35 + isBehind * 0.35; // extends 35% to 70% beyond radius
+                    float maxDist = interRadius * (1.0 + wakeExtend);
 
-                    if (xzDist < interRadius && yDist < 2.5)
+                    if (xzDist < interRadius)
                     {
-                        minActiveDist = min(minActiveDist, xzDist / interRadius);
-                        float2 xzDir = (xzDist > 0.001) ? normalize(xzOffset) : float2(0, 1);
+                        // Direct push: blade is pressed away and downward
                         float factor = 1.0 - (xzDist / interRadius);
                         float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.85);
-                        float downPush = -lerp(0.15, 0.85, _InteractionFlatten);
-                        float3 pushDir = normalize(float3(xzDir.x, downPush, xzDir.y));
+                        float3 pushDir = normalize(float3(xzDir.x, -0.4, xzDir.y));
                         interactorPush += pushDir * pushAmount;
-                    }
-                }
-            }
-        }
 
-        // 9b. Elastic Recovery Wake & Walking Trail Persistence (Always active when layer interaction is enabled!)
-        if (_TrailCount > 0)
-        {
-            // If Walking Trail is enabled, footprints stay pressed for _TrailDuration.
-            // If Walking Trail is disabled, recovery wake lasts according to _ElasticRecoverySpeed.
-            float baseDuration = (_EnableTrailPersistence > 0.5)
-                ? max(0.1, _TrailDuration)
-                : max(0.2, 1.8 / max(0.2, _ElasticRecoverySpeed));
-
-            // Blend out wake directly under the active player's feet (active contact takes priority)
-            float wakeWeight = saturate((minActiveDist - 0.25) * 2.0);
-
-            if (wakeWeight > 0.01)
-            {
-                for (int j = 0; j < _TrailCount; j++)
-                {
-                    float4 tPosTime = _TrailPoints[j];
-                    float4 tParams = _TrailParams[j];
-                    float age = _Time - tPosTime.w;
-
-                    if (age >= 0.0 && age < baseDuration)
-                    {
-                        float progress = saturate(age / baseDuration);
-                        float2 tOffset = bladeRoot.xz - tPosTime.xz;
-                        float tDist = length(tOffset);
-                        float tRadius = tParams.x;
-                        float tStrength = tParams.y * _InteractionStrength;
-
-                        if (tDist < tRadius)
+                        // Subtle spring recoil vibration near outer perimeter of contact
+                        if (_ElasticOscillation > 0.01 && factor < 0.4)
                         {
-                            float falloff = 1.0 - (tDist / tRadius);
-                            float spatialFactor = smoothstep(0.0, 1.0, falloff);
-
-                            // Elastic recovery decay curve:
-                            // decay smoothly brings grass back from full bend (1.0) to rest (0.0)
-                            float decayPower = max(0.5, _ElasticRecoverySpeed * 1.5);
-                            float decay = pow(1.0 - progress, decayPower);
-
-                            // Damped harmonic oscillation:
-                            // Allows grass to spring past upright and recoil/bounce back and forth!
-                            float oscFreq = max(1.0, _ElasticRecoverySpeed) * 8.0;
-                            float oscDamping = exp(-progress * 4.0);
-                            float bounce = sin(progress * oscFreq) * oscDamping * _ElasticOscillation;
-
-                            // Full dynamic factor with unclipped oscillation recoil
-                            float netFactor = (decay + bounce) * spatialFactor * tStrength * wakeWeight;
-
-                            float2 walkDir = tParams.zw;
-                            float hasWalk = (dot(walkDir, walkDir) > 0.01) ? 1.0 : 0.0;
-                            float2 pushXZ = normalize(lerp(tOffset + float2(1e-4, 1e-4), walkDir, hasWalk * 0.65));
-
-                            float flattenDep = (_EnableTrailPersistence > 0.5) ? _TrailDepression : _InteractionFlatten;
-                            float trailDown = -lerp(0.15, 0.85, flattenDep);
-                            float3 trailPushDir = normalize(float3(pushXZ.x, trailDown, pushXZ.y));
-
-                            interactorPush += trailPushDir * (netFactor * tRadius * 0.75);
+                            float edgeT = 1.0 - (factor / 0.4);
+                            float wobble = sin(_Time * 20.0 + hash * 6.283) * edgeT * interStrength * 0.25 * _ElasticOscillation;
+                            interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
                         }
+                    }
+                    else if (xzDist < maxDist && _ElasticOscillation > 0.01)
+                    {
+                        // Spring release wobble: blades oscillate and settle as player moves away
+                        float releaseT = 1.0 - (xzDist - interRadius) / (maxDist - interRadius);
+                        float wobble = sin(_Time * 20.0 + hash * 6.283) * releaseT * interStrength * 0.35 * _ElasticOscillation;
+                        interactorPush += float3(xzDir.x, 0.0, xzDir.y) * wobble;
                     }
                 }
             }

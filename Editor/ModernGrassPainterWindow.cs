@@ -64,8 +64,7 @@ namespace ModernGrassTool.Editor
         private Texture2D _windPreviewTex;
         private double _lastWindPreviewTime;
 
-        [MenuItem("Tools/Easy Grass Painter/Grass Painter")]
-        [MenuItem("Window/Easy Grass Painter/Grass Painter")]
+        [MenuItem("Tools/Modern Grass/Grass Painter")]
         public static void OpenWindow()
         {
             var win = GetWindow<ModernGrassPainterWindow>("Grass Painter");
@@ -721,22 +720,8 @@ namespace ModernGrassTool.Editor
                             if (layer.enableInteraction)
                             {
                                 EditorGUI.indentLevel++;
-                                layer.interactionStrength = EditorGUILayout.Slider(new GUIContent("Push Strength", "How strongly grass bends away from interactors."), layer.interactionStrength, 0.1f, 3.0f);
-                                layer.interactionFlatten = EditorGUILayout.Slider(new GUIContent("Flatten Amount", "How much blades get pressed flat against the ground versus pushed sideways."), layer.interactionFlatten, 0.0f, 1.0f);
-                                layer.elasticRecoverySpeed = EditorGUILayout.Slider(new GUIContent("Recovery Speed", "How fast blades spring back up to vertical orientation."), layer.elasticRecoverySpeed, 0.2f, 5.0f);
-                                layer.elasticOscillation = EditorGUILayout.Slider(new GUIContent("Oscillation Bounce", "Elastic springiness/bounce back when releasing from an interactor."), layer.elasticOscillation, 0.0f, 1.0f);
+                                layer.elasticOscillation = EditorGUILayout.Slider(new GUIContent("Spring Wobble", "How much blades wobble and shake as they spring back to their rest position after being pushed."), layer.elasticOscillation, 0.0f, 1.0f);
                                 EditorGUI.indentLevel--;
-
-                                EditorGUILayout.Space(4);
-                                EditorGUILayout.LabelField("Footprint / Walking Trail", EditorStyles.boldLabel);
-                                layer.enableTrailPersistence = EditorGUILayout.Toggle(new GUIContent("Enable Walking Trail", "Keeps trampled footsteps and walking trails depressed before elastically recovering."), layer.enableTrailPersistence);
-                                if (layer.enableTrailPersistence)
-                                {
-                                    EditorGUI.indentLevel++;
-                                    layer.trailDuration = EditorGUILayout.Slider(new GUIContent("Trail Duration (sec)", "Time in seconds before footprints fully recover."), layer.trailDuration, 0.5f, 10.0f);
-                                    layer.trailDepression = EditorGUILayout.Slider(new GUIContent("Trail Depression", "Downward flatten depth of footsteps in the grass."), layer.trailDepression, 0.0f, 1.0f);
-                                    EditorGUI.indentLevel--;
-                                }
                             }
                         }
                     }
@@ -751,27 +736,16 @@ namespace ModernGrassTool.Editor
             }
         }
 
-        private static string GetOrCreatePresetsFolder()
-        {
-            if (AssetDatabase.IsValidFolder("Assets/EasyGrassPresets"))
-            {
-                return "Assets/EasyGrassPresets";
-            }
-            if (AssetDatabase.IsValidFolder("Assets/ModernGrassPresets"))
-            {
-                return "Assets/ModernGrassPresets";
-            }
-            if (AssetDatabase.IsValidFolder("Assets/ModernGrassTool/Presets"))
-            {
-                return "Assets/ModernGrassTool/Presets";
-            }
-            AssetDatabase.CreateFolder("Assets", "EasyGrassPresets");
-            return "Assets/EasyGrassPresets";
-        }
-
         private void CreateNewGrassType(ModernGrassType sourceType)
         {
-            string presetsFolder = GetOrCreatePresetsFolder();
+            if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool/Presets"))
+            {
+                if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool"))
+                {
+                    AssetDatabase.CreateFolder("Assets", "ModernGrassTool");
+                }
+                AssetDatabase.CreateFolder("Assets/ModernGrassTool", "Presets");
+            }
 
             string defaultName = sourceType != null
                 ? $"{sourceType.typeName.Replace(" ", "_")}_Variant"
@@ -786,7 +760,7 @@ namespace ModernGrassTool.Editor
                 defaultName,
                 "asset",
                 "Choose a name and location for your new Grass Type asset.",
-                presetsFolder
+                "Assets/ModernGrassTool/Presets"
             );
 
             if (string.IsNullOrEmpty(path)) return; // User canceled dialog
@@ -862,10 +836,17 @@ namespace ModernGrassTool.Editor
         private void SaveGrassTypeAsNew(ModernGrassType original)
         {
             if (original == null) return;
-            string presetsFolder = GetOrCreatePresetsFolder();
+            if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool/Presets"))
+            {
+                if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool"))
+                {
+                    AssetDatabase.CreateFolder("Assets", "ModernGrassTool");
+                }
+                AssetDatabase.CreateFolder("Assets/ModernGrassTool", "Presets");
+            }
 
             string defaultName = $"{original.typeName.Replace(" ", "_")}_Preset";
-            string path = EditorUtility.SaveFilePanelInProject("Save Grass Type Preset", defaultName, "asset", "Save current grass settings as a reusable ScriptableObject preset asset.", presetsFolder);
+            string path = EditorUtility.SaveFilePanelInProject("Save Grass Type Preset", defaultName, "asset", "Save current grass settings as a reusable ScriptableObject preset asset.", "Assets/ModernGrassTool/Presets");
             if (!string.IsNullOrEmpty(path))
             {
                 ModernGrassType clone = Instantiate(original);
