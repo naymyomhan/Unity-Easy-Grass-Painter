@@ -341,11 +341,11 @@ namespace ModernGrassTool
                 }
                 else
                 {
-                    var player = UnityEngine.Object.FindFirstObjectByType<ThirdPersonPlayerController>();
-                    if (player != null)
+                    var interactor = UnityEngine.Object.FindFirstObjectByType<ModernGrassInteractor>();
+                    if (interactor != null)
                     {
-                        playerReference = player.transform;
-                        refPos = player.transform.position;
+                        playerReference = interactor.transform;
+                        refPos = interactor.transform.position;
                     }
                 }
 
