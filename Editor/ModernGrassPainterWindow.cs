@@ -20,6 +20,7 @@ namespace ModernGrassTool.Editor
         public int brushDensity = 8;
         public float brushSpacing = 0.25f;
         public float minBladeDistance = 0.12f;
+        public float maxSlopeAngle = 60f;
         public LayerMask hitLayers = ~0;
         public bool isPaintingEnabled = true;
         public bool enableStrokeUndo = false;
@@ -208,6 +209,7 @@ namespace ModernGrassTool.Editor
                     brushSpacing = EditorGUILayout.Slider("Brush Spacing", brushSpacing, 0.05f, 2f);
                     string distLabel = minBladeDistance <= 0.001f ? "Min Blade Spacing (Off / Unlimited)" : $"Min Blade Spacing ({minBladeDistance:F2}m)";
                     minBladeDistance = EditorGUILayout.Slider(new GUIContent(distLabel, "Minimum distance between individual grass blades. Prevents overlapping blades and infinite point stacking when painting the same area repeatedly."), minBladeDistance, 0f, 0.5f);
+                    maxSlopeAngle = EditorGUILayout.Slider(new GUIContent($"Brush Max Slope ({maxSlopeAngle:F0}°)", "Surfaces steeper than this angle in degrees will be skipped during painting."), maxSlopeAngle, 10f, 90f);
                 }
 
                 // Raycast Layer Mask Filter
@@ -504,6 +506,12 @@ namespace ModernGrassTool.Editor
                                 layer.bladeForward = EditorGUILayout.Slider("Blade Curvature", layer.bladeForward, 0f, 1.0f);
                                 layer.bladeCurve = EditorGUILayout.Slider("Curve Power", layer.bladeCurve, 1f, 4f);
                                 layer.uprightIntensity = EditorGUILayout.Slider(new GUIContent("Upright Intensity", "Blends between surface normal (0 = sticking out perpendicular to slope) and world up (1 = growing straight up towards the sky)."), layer.uprightIntensity, 0f, 1f);
+                                float currentAngle = Mathf.Round(Mathf.Acos(Mathf.Clamp01(layer.normalLimit)) * Mathf.Rad2Deg);
+                                float newAngle = EditorGUILayout.Slider(new GUIContent($"Max Slope Angle ({currentAngle:F0}°)", "Maximum surface slope angle in degrees where this grass species can grow."), currentAngle, 10f, 90f);
+                                if (Mathf.Abs(newAngle - currentAngle) > 0.1f)
+                                {
+                                    layer.normalLimit = Mathf.Cos(newAngle * Mathf.Deg2Rad);
+                                }
                             }
                         }
 
@@ -980,6 +988,15 @@ namespace ModernGrassTool.Editor
                 if (!groundFound)
                 {
                     // No valid ground collider found underneath (hanging over edge into mid-air) -> Skip!
+                    continue;
+                }
+
+                // Slope angle filter: prevent planting grass on steep cliffs or walls
+                float surfaceSlope = Vector3.Angle(normal, Vector3.up);
+                float layerMaxSlope = layer.normalLimit > 0.001f ? Mathf.Acos(Mathf.Clamp01(layer.normalLimit)) * Mathf.Rad2Deg : 90f;
+                float effectiveMaxSlope = Mathf.Min(maxSlopeAngle, layerMaxSlope);
+                if (surfaceSlope > effectiveMaxSlope)
+                {
                     continue;
                 }
 

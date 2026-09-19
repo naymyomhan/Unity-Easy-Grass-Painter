@@ -173,6 +173,12 @@ namespace ModernGrassTool.Editor
                         gt.bladeForward = EditorGUILayout.Slider("Blade Curvature", gt.bladeForward, 0f, 1.0f);
                         gt.bladeCurve = EditorGUILayout.Slider("Curve Power", gt.bladeCurve, 1f, 4f);
                         gt.uprightIntensity = EditorGUILayout.Slider(new GUIContent("Upright Intensity", "Blends between surface normal (0 = sticking out perpendicular to slope) and world up (1 = growing straight up towards the sky)."), gt.uprightIntensity, 0f, 1f);
+                        float currentAngle = Mathf.Round(Mathf.Acos(Mathf.Clamp01(gt.normalLimit)) * Mathf.Rad2Deg);
+                        float newAngle = EditorGUILayout.Slider(new GUIContent($"Max Slope Angle ({currentAngle:F0}°)", "Maximum surface slope angle in degrees where this grass species can grow."), currentAngle, 10f, 90f);
+                        if (Mathf.Abs(newAngle - currentAngle) > 0.1f)
+                        {
+                            gt.normalLimit = Mathf.Cos(newAngle * Mathf.Deg2Rad);
+                        }
                     }
                 }
 
