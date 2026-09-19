@@ -78,6 +78,297 @@ namespace ModernGrassTool
         private Vector4[] _impulsePoints = new Vector4[32];
         private Vector4[] _impulseParams = new Vector4[32];
 
+        public struct GrassShockwave
+        {
+            public Vector3 origin;
+            public float startTime;
+            public float radius;
+            public float speed;
+            public float force;
+            public float thickness;
+            public float duration;
+        }
+
+        public const int MaxShockwaves = 8;
+        private readonly GrassShockwave[] _shockwaves = new GrassShockwave[MaxShockwaves];
+        private int _shockwaveCount = 0;
+        private Vector4[] _shockwaveOrigins = new Vector4[MaxShockwaves];
+        private Vector4[] _shockwaveParams = new Vector4[MaxShockwaves];
+
+        public static void TriggerShockwave(Vector3 origin, float radius = 8f, float force = 1.5f, float speed = 22f, float thickness = 2.0f)
+        {
+            if (Instance != null)
+            {
+                Instance.AddShockwave(origin, radius, force, speed, thickness);
+            }
+            else
+            {
+                var mgr = FindAnyObjectByType<ModernGrassManager>();
+                if (mgr != null)
+                {
+                    mgr.AddShockwave(origin, radius, force, speed, thickness);
+                }
+            }
+        }
+
+        public void AddShockwave(Vector3 origin, float radius, float force, float speed, float thickness)
+        {
+            if (radius <= 0.1f || force <= 0.01f || speed <= 0.1f) return;
+
+            float currentTime = Application.isPlaying ? Time.time : (float)Time.realtimeSinceStartup;
+            float travelTime = radius / speed;
+            float totalDuration = travelTime + 1.8f;
+
+            int targetIdx = -1;
+            float oldestTime = float.MaxValue;
+            int oldestIdx = 0;
+
+            for (int i = 0; i < MaxShockwaves; i++)
+            {
+                if (i >= _shockwaveCount)
+                {
+                    targetIdx = i;
+                    break;
+                }
+
+                float age = currentTime - _shockwaves[i].startTime;
+                if (age >= _shockwaves[i].duration)
+                {
+                    targetIdx = i;
+                    break;
+                }
+
+                if (_shockwaves[i].startTime < oldestTime)
+                {
+                    oldestTime = _shockwaves[i].startTime;
+                    oldestIdx = i;
+                }
+            }
+
+            if (targetIdx == -1) targetIdx = oldestIdx;
+
+            _shockwaves[targetIdx] = new GrassShockwave
+            {
+                origin = origin,
+                startTime = currentTime,
+                radius = radius,
+                speed = speed,
+                force = force,
+                thickness = Mathf.Max(0.5f, thickness),
+                duration = totalDuration
+            };
+
+            if (targetIdx >= _shockwaveCount)
+            {
+                _shockwaveCount = targetIdx + 1;
+            }
+        }
+
+        public struct GrassWindBurst
+        {
+            public Vector3 origin;
+            public Vector3 direction;
+            public float radius;
+            public float force;
+            public float coneAngle;
+            public float verticalRange;
+            public float flutterSpeed;
+            public float startTime;
+            public float blowDuration;
+            public float recoilDuration;
+            public GrassWindMode mode;
+            public bool isRecoilOnly;
+        }
+
+        public const int MaxWindZones = 8;
+        private static readonly List<ModernGrassWindZone> _activeWindZones = new List<ModernGrassWindZone>();
+        private readonly List<GrassWindBurst> _windBursts = new List<GrassWindBurst>();
+        private Vector4[] _windZoneOrigins = new Vector4[MaxWindZones];
+        private Vector4[] _windZoneVectors = new Vector4[MaxWindZones];
+        private Vector4[] _windZoneParams = new Vector4[MaxWindZones];
+        private Vector4[] _windZoneTimes = new Vector4[MaxWindZones];
+
+        public static void RegisterWindZone(ModernGrassWindZone zone)
+        {
+            if (zone != null && !_activeWindZones.Contains(zone))
+            {
+                _activeWindZones.Add(zone);
+            }
+        }
+
+        public static void UnregisterWindZone(ModernGrassWindZone zone)
+        {
+            if (zone != null)
+            {
+                _activeWindZones.Remove(zone);
+            }
+        }
+
+        public static void RecordWindRecoil(Vector3 origin, Vector3 direction, float radius, float force, float coneAngle, float verticalRange, GrassWindMode mode)
+        {
+            if (Instance != null)
+            {
+                Instance.AddWindRecoil(origin, direction, radius, force, coneAngle, verticalRange, mode);
+            }
+            else
+            {
+                var mgr = FindAnyObjectByType<ModernGrassManager>();
+                mgr?.AddWindRecoil(origin, direction, radius, force, coneAngle, verticalRange, mode);
+            }
+        }
+
+        public void AddWindRecoil(Vector3 origin, Vector3 direction, float radius, float force, float coneAngle, float verticalRange, GrassWindMode mode)
+        {
+            float currentTime = Application.isPlaying ? Time.time : (float)Time.realtimeSinceStartup;
+            _windBursts.Add(new GrassWindBurst
+            {
+                origin = origin,
+                direction = direction.sqrMagnitude > 0.001f ? direction.normalized : Vector3.forward,
+                radius = radius,
+                force = force,
+                coneAngle = coneAngle,
+                verticalRange = verticalRange,
+                flutterSpeed = 18f,
+                startTime = currentTime,
+                blowDuration = 0f,
+                recoilDuration = 1.6f,
+                mode = mode,
+                isRecoilOnly = true
+            });
+        }
+
+        public static void TriggerWindBurst(Vector3 origin, Vector3 direction, float range = 15f, float force = 2.5f, float duration = 2.0f, float coneAngle = 60f, float flutterSpeed = 18f)
+        {
+            if (Instance != null)
+            {
+                Instance.AddWindBurst(origin, direction, range, force, duration, coneAngle, 15f, flutterSpeed, GrassWindMode.Directional);
+            }
+            else
+            {
+                var mgr = FindAnyObjectByType<ModernGrassManager>();
+                mgr?.AddWindBurst(origin, direction, range, force, duration, coneAngle, 15f, flutterSpeed, GrassWindMode.Directional);
+            }
+        }
+
+        public static void TriggerOmniWindBurst(Vector3 origin, float radius = 12f, float force = 2.5f, float duration = 2.0f, float verticalRange = 15f, float flutterSpeed = 20f)
+        {
+            if (Instance != null)
+            {
+                Instance.AddWindBurst(origin, Vector3.down, radius, force, duration, 360f, verticalRange, flutterSpeed, GrassWindMode.Omnidirectional);
+            }
+            else
+            {
+                var mgr = FindAnyObjectByType<ModernGrassManager>();
+                mgr?.AddWindBurst(origin, Vector3.down, radius, force, duration, 360f, verticalRange, flutterSpeed, GrassWindMode.Omnidirectional);
+            }
+        }
+
+        public void AddWindBurst(Vector3 origin, Vector3 direction, float radius, float force, float duration, float coneAngle, float verticalRange, float flutterSpeed, GrassWindMode mode)
+        {
+            float currentTime = Application.isPlaying ? Time.time : (float)Time.realtimeSinceStartup;
+            _windBursts.Add(new GrassWindBurst
+            {
+                origin = origin,
+                direction = direction.sqrMagnitude > 0.001f ? direction.normalized : Vector3.forward,
+                radius = radius,
+                force = force,
+                coneAngle = coneAngle,
+                verticalRange = verticalRange,
+                flutterSpeed = flutterSpeed,
+                startTime = currentTime,
+                blowDuration = duration,
+                recoilDuration = 1.6f,
+                mode = mode,
+                isRecoilOnly = false
+            });
+        }
+
+        private int CollectActiveWindZones(float currentTime)
+        {
+            int count = 0;
+
+            // 1. Collect from active ModernGrassWindZone components
+            for (int i = 0; i < _activeWindZones.Count; i++)
+            {
+                var wz = _activeWindZones[i];
+                if (wz == null || !wz.isActiveAndEnabled) continue;
+
+                if (wz.IsActive(currentTime, out float fadeWeight) && fadeWeight > 0.001f)
+                {
+                    float effForce = wz.force * fadeWeight;
+                    float cosAngle = Mathf.Cos(wz.coneAngle * 0.5f * Mathf.Deg2Rad);
+                    Vector3 fwd = wz.transform.forward;
+
+                    _windZoneOrigins[count] = new Vector4(wz.transform.position.x, wz.transform.position.y, wz.transform.position.z, wz.mode == GrassWindMode.Directional ? 0f : 1f);
+                    _windZoneVectors[count] = new Vector4(fwd.x, fwd.y, fwd.z, cosAngle);
+                    _windZoneParams[count] = new Vector4(wz.radius, effForce, wz.flutterSpeed, wz.verticalRange);
+                    _windZoneTimes[count] = new Vector4(-1f, 1.6f, 0f, 0f); // -1 = actively blowing
+                    count++;
+                    if (count >= MaxWindZones) break;
+                }
+            }
+
+            // 2. Collect from dynamic bursts and release recoils
+            for (int i = _windBursts.Count - 1; i >= 0; i--)
+            {
+                var burst = _windBursts[i];
+                float elapsed = currentTime - burst.startTime;
+
+                if (burst.isRecoilOnly)
+                {
+                    // Pure release recoil (e.g. zone turned off)
+                    if (elapsed >= burst.recoilDuration || elapsed < 0f)
+                    {
+                        _windBursts.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (count < MaxWindZones)
+                    {
+                        float cosAngle = Mathf.Cos(burst.coneAngle * 0.5f * Mathf.Deg2Rad);
+                        _windZoneOrigins[count] = new Vector4(burst.origin.x, burst.origin.y, burst.origin.z, burst.mode == GrassWindMode.Directional ? 0f : 1f);
+                        _windZoneVectors[count] = new Vector4(burst.direction.x, burst.direction.y, burst.direction.z, cosAngle);
+                        _windZoneParams[count] = new Vector4(burst.radius, burst.force, burst.flutterSpeed, burst.verticalRange);
+                        _windZoneTimes[count] = new Vector4(burst.startTime, burst.recoilDuration, 0f, 0f); // >= 0 means in recoil!
+                        count++;
+                    }
+                }
+                else
+                {
+                    // Timed burst (blow phase -> harmonic spring recoil phase)
+                    float totalDuration = burst.blowDuration + burst.recoilDuration;
+                    if (elapsed >= totalDuration || elapsed < 0f)
+                    {
+                        _windBursts.RemoveAt(i);
+                        continue;
+                    }
+
+                    if (count < MaxWindZones)
+                    {
+                        float cosAngle = Mathf.Cos(burst.coneAngle * 0.5f * Mathf.Deg2Rad);
+                        _windZoneOrigins[count] = new Vector4(burst.origin.x, burst.origin.y, burst.origin.z, burst.mode == GrassWindMode.Directional ? 0f : 1f);
+                        _windZoneVectors[count] = new Vector4(burst.direction.x, burst.direction.y, burst.direction.z, cosAngle);
+                        _windZoneParams[count] = new Vector4(burst.radius, burst.force, burst.flutterSpeed, burst.verticalRange);
+
+                        if (elapsed < burst.blowDuration)
+                        {
+                            // Actively blowing
+                            _windZoneTimes[count] = new Vector4(-1f, burst.recoilDuration, 0f, 0f);
+                        }
+                        else
+                        {
+                            // In harmonic spring recoil phase
+                            float recoilStart = burst.startTime + burst.blowDuration;
+                            _windZoneTimes[count] = new Vector4(recoilStart, burst.recoilDuration, 0f, 0f);
+                        }
+                        count++;
+                    }
+                }
+            }
+
+            return count;
+        }
+
         private Plane[] _frustumPlanes = new Plane[6];
         private Vector4[] _frustumPlaneVectors = new Vector4[6];
         private Vector3 _cachedCamPos;
@@ -791,6 +1082,36 @@ namespace ModernGrassTool
                     computeShader.SetVectorArray("_ImpulseParams", _impulseParams);
                 }
 
+                int activeShockwaveCount = 0;
+                for (int s = 0; s < _shockwaveCount; s++)
+                {
+                    var sw = _shockwaves[s];
+                    float age = currentTime - sw.startTime;
+                    if (age >= 0f && age < sw.duration)
+                    {
+                        _shockwaveOrigins[activeShockwaveCount] = new Vector4(sw.origin.x, sw.origin.y, sw.origin.z, sw.startTime);
+                        _shockwaveParams[activeShockwaveCount] = new Vector4(sw.radius, sw.speed, sw.force, sw.thickness);
+                        activeShockwaveCount++;
+                    }
+                }
+
+                computeShader.SetInt("_ShockwaveCount", activeShockwaveCount);
+                if (activeShockwaveCount > 0)
+                {
+                    computeShader.SetVectorArray("_ShockwaveOrigins", _shockwaveOrigins);
+                    computeShader.SetVectorArray("_ShockwaveParams", _shockwaveParams);
+                }
+
+                int activeWindZoneCount = CollectActiveWindZones(currentTime);
+                computeShader.SetInt("_WindZoneCount", activeWindZoneCount);
+                if (activeWindZoneCount > 0)
+                {
+                    computeShader.SetVectorArray("_WindZoneOrigins", _windZoneOrigins);
+                    computeShader.SetVectorArray("_WindZoneVectors", _windZoneVectors);
+                    computeShader.SetVectorArray("_WindZoneParams", _windZoneParams);
+                    computeShader.SetVectorArray("_WindZoneTimes", _windZoneTimes);
+                }
+
                 // 3. Dispatch GPU culling & blade generation
                 int threadGroups = Mathf.CeilToInt(totalBladeCount / 64f);
                 computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
@@ -928,6 +1249,36 @@ namespace ModernGrassTool
             {
                 mat.SetVectorArray("_ImpulsePoints", _impulsePoints);
                 mat.SetVectorArray("_ImpulseParams", _impulseParams);
+            }
+
+            int activeMeshShockwaveCount = 0;
+            for (int s = 0; s < _shockwaveCount; s++)
+            {
+                var sw = _shockwaves[s];
+                float age = currentTime - sw.startTime;
+                if (age >= 0f && age < sw.duration)
+                {
+                    _shockwaveOrigins[activeMeshShockwaveCount] = new Vector4(sw.origin.x, sw.origin.y, sw.origin.z, sw.startTime);
+                    _shockwaveParams[activeMeshShockwaveCount] = new Vector4(sw.radius, sw.speed, sw.force, sw.thickness);
+                    activeMeshShockwaveCount++;
+                }
+            }
+
+            mat.SetInt("_ShockwaveCount", activeMeshShockwaveCount);
+            if (activeMeshShockwaveCount > 0)
+            {
+                mat.SetVectorArray("_ShockwaveOrigins", _shockwaveOrigins);
+                mat.SetVectorArray("_ShockwaveParams", _shockwaveParams);
+            }
+
+            int activeMeshWindZoneCount = CollectActiveWindZones(currentTime);
+            mat.SetInt("_WindZoneCount", activeMeshWindZoneCount);
+            if (activeMeshWindZoneCount > 0)
+            {
+                mat.SetVectorArray("_WindZoneOrigins", _windZoneOrigins);
+                mat.SetVectorArray("_WindZoneVectors", _windZoneVectors);
+                mat.SetVectorArray("_WindZoneParams", _windZoneParams);
+                mat.SetVectorArray("_WindZoneTimes", _windZoneTimes);
             }
 
             int visibleCount = layer.visibleIDs.Count;

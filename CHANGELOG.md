@@ -5,6 +5,22 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-20
+
+### Added
+- **Explosion & Expanding Shockwave System**:
+  - `ModernGrassShockwave` component and `ModernGrassManager.TriggerShockwave(...)` static API.
+  - Expanding ring wavefront deformation with violent radial crest knockdown on procedural and custom 3D mesh foliage.
+  - Blast wake damped harmonic spring recoil physics ($\sim 1.6\text{s}$).
+  - Zero-allocation GPU architecture (up to 8 concurrent shockwaves in GPU L1 cache).
+- **Dynamic Wind Blast & 360° Continuous Rotor/Aura Wash**:
+  - `ModernGrassWindZone` component supporting `Directional` (cone gusts) and `Omnidirectional` (360° downward rotor wash).
+  - Continuous and TimedBurst modes with interactive Scene view Gizmos.
+  - High-frequency dynamic flutter ripples travelling along the blast vector.
+  - `ModernGrassManager.TriggerWindBurst` and `ModernGrassManager.TriggerOmniWindBurst` static APIs.
+- **Wind Release Damped Harmonic Spring Oscillation**:
+  - When wind zones are disabled or bursts end, grass smoothly transitions into elastic harmonic spring recoil instead of snapping upright.
+
 ## [1.0.0] - 2026-09-19
 
 ### Added

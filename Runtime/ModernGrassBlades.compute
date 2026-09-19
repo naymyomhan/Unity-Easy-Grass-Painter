@@ -101,6 +101,16 @@ int _ImpulseCount;
 float4 _ImpulsePoints[32]; // xyz = world pos, w = timestamp
 float4 _ImpulseParams[32]; // xy = dir, z = radius, w = duration
 
+int _ShockwaveCount;
+float4 _ShockwaveOrigins[8]; // xyz = origin, w = startTime
+float4 _ShockwaveParams[8];  // x = radius, y = speed, z = force, w = thickness
+
+int _WindZoneCount;
+float4 _WindZoneOrigins[8]; // xyz = origin, w = mode (0 = Directional, 1 = Omnidirectional)
+float4 _WindZoneVectors[8]; // xyz = forward dir, w = cos(coneAngle * 0.5)
+float4 _WindZoneParams[8];  // x = radius/range, y = force, z = flutterSpeed, w = verticalRange
+float4 _WindZoneTimes[8];   // x = recoilStartTime (-1 if active), y = recoilDuration (1.6s)
+
 // -------------------------------------------------------------------------
 // Simplex 2D Noise Implementation (Stefan Gustavson / Ian McEwan)
 // -------------------------------------------------------------------------
@@ -342,6 +352,120 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float forwardDisplacement = baseDisplacement + gustPush;
     float3 windOffset = (windDir * forwardDisplacement + crossWind * crossSway) * (_WindStrength * motionMult);
 
+    // 4. Dynamic Wind Zones & Blasts (Directional Cones & Omnidirectional 360 Rotor Wash)
+    if (_WindZoneCount > 0 && motionMult > 0.001)
+    {
+        float3 windZoneOffset = float3(0, 0, 0);
+        [loop]
+        for (int wz = 0; wz < _WindZoneCount; wz++)
+        {
+            float3 wzOrigin = _WindZoneOrigins[wz].xyz;
+            float wzMode = _WindZoneOrigins[wz].w; // 0 = Directional, 1 = Omnidirectional
+            float3 wzDir = _WindZoneVectors[wz].xyz;
+            float cosAngleThreshold = _WindZoneVectors[wz].w;
+            float wzRadius = _WindZoneParams[wz].x;
+            float wzForce = _WindZoneParams[wz].y;
+            float flutterSpeed = _WindZoneParams[wz].z;
+            float vertRange = _WindZoneParams[wz].w;
+            float recoilStartTime = _WindZoneTimes[wz].x;
+            float recoilDuration = _WindZoneTimes[wz].y;
+
+            if (wzForce > 0.001 && wzRadius > 0.1)
+            {
+                if (recoilStartTime >= 0.0) // Post-wind release: Damped Harmonic Spring Oscillation!
+                {
+                    float age = _Time - recoilStartTime;
+                    if (age >= 0.0 && age < recoilDuration)
+                    {
+                        float progress = age / recoilDuration;
+                        float decay = exp(-progress * 3.5) * (1.0 - progress);
+                        float freq = 12.5 + (hash - 0.5) * 2.0;
+                        float wave = cos(age * freq);
+                        float springFactor = wave * decay;
+
+                        if (wzMode < 0.5) // Directional Recoil
+                        {
+                            float3 toBlade = rootPos - wzOrigin;
+                            float dist = length(toBlade);
+                            if (dist > 0.01 && dist < wzRadius)
+                            {
+                                float3 toBladeDir = toBlade / dist;
+                                float dotFwd = dot(toBladeDir, wzDir);
+                                if (dotFwd >= cosAngleThreshold)
+                                {
+                                    float angleFalloff = smoothstep(cosAngleThreshold, 1.0, dotFwd);
+                                    float distFalloff = smoothstep(0.0, 1.0, 1.0 - (dist / wzRadius));
+                                    windZoneOffset += wzDir * (wzForce * distFalloff * angleFalloff * springFactor);
+                                }
+                            }
+                        }
+                        else // Omnidirectional 360 Radial Recoil
+                        {
+                            float2 xzOffset = rootPos.xz - wzOrigin.xz;
+                            float horizontalDist = length(xzOffset);
+                            float verticalOffset = wzOrigin.y - rootPos.y;
+
+                            if (horizontalDist < wzRadius && verticalOffset >= -2.0 && verticalOffset <= vertRange)
+                            {
+                                float2 radialDir = (horizontalDist > 0.001) ? (xzOffset / horizontalDist) : float2(0, 1);
+                                float vertAtten = 1.0 - saturate(abs(verticalOffset) / max(0.1, vertRange));
+                                float horizAtten = smoothstep(1.0, 0.0, horizontalDist / wzRadius);
+                                float3 pushDir = normalize(float3(radialDir.x, -0.4, radialDir.y));
+                                windZoneOffset += pushDir * (wzForce * horizAtten * vertAtten * springFactor);
+                            }
+                        }
+                    }
+                }
+                else // Active continuous wind blowing
+                {
+                    if (wzMode < 0.5) // Directional Cone Blast
+                    {
+                        float3 toBlade = rootPos - wzOrigin;
+                        float dist = length(toBlade);
+                        if (dist > 0.01 && dist < wzRadius)
+                        {
+                            float3 toBladeDir = toBlade / dist;
+                            float dotFwd = dot(toBladeDir, wzDir);
+                            if (dotFwd >= cosAngleThreshold)
+                            {
+                                float angleFalloff = smoothstep(cosAngleThreshold, 1.0, dotFwd);
+                                float distFalloff = 1.0 - (dist / wzRadius);
+                                distFalloff = smoothstep(0.0, 1.0, distFalloff);
+
+                                float streamPhase = _Time * flutterSpeed - dist * 2.5 + hash * 0.7;
+                                float flutter = 0.85 + 0.35 * sin(streamPhase);
+
+                                float pushMag = wzForce * distFalloff * angleFalloff * flutter;
+                                windZoneOffset += wzDir * pushMag;
+                            }
+                        }
+                    }
+                    else // Omnidirectional 360 Radial / Downward Rotor Wash (Helicopter / Aura)
+                    {
+                        float2 xzOffset = rootPos.xz - wzOrigin.xz;
+                        float horizontalDist = length(xzOffset);
+                        float verticalOffset = wzOrigin.y - rootPos.y;
+
+                        if (horizontalDist < wzRadius && verticalOffset >= -2.0 && verticalOffset <= vertRange)
+                        {
+                            float2 radialDir = (horizontalDist > 0.001) ? (xzOffset / horizontalDist) : float2(0, 1);
+                            float vertAtten = 1.0 - saturate(abs(verticalOffset) / max(0.1, vertRange));
+                            float horizAtten = smoothstep(1.0, 0.0, horizontalDist / wzRadius);
+
+                            float ripplePhase = _Time * flutterSpeed - horizontalDist * 3.2;
+                            float washRipple = 0.8 + 0.3 * sin(ripplePhase);
+
+                            float washPower = wzForce * horizAtten * vertAtten * washRipple;
+                            float3 pushDir = normalize(float3(radialDir.x, -0.4, radialDir.y));
+                            windZoneOffset += pushDir * washPower;
+                        }
+                    }
+                }
+            }
+        }
+        windOffset += windZoneOffset;
+    }
+
     // --- 9. INTERACTOR CONTACT & ELASTIC SPRING WOBBLE ---
     float3 interactorPush = float3(0, 0, 0);
     if (_EnableInteraction > 0.5 && motionMult > 0.001)
@@ -437,6 +561,65 @@ void CSMain(uint3 id : SV_DispatchThreadID)
             // As player moves away, wobble seamlessly blends in.
             float contactSuppression = (minContactDist < 1.0) ? smoothstep(0.4, 1.0, minContactDist) : 1.0;
             interactorPush += impulseWobble * contactSuppression;
+        }
+
+        // 3. Explosion & Shockwave Expanding Ring Physics
+        if (_ShockwaveCount > 0)
+        {
+            float3 shockwavePush = float3(0, 0, 0);
+            for (int s = 0; s < _ShockwaveCount; s++)
+            {
+                float3 sOrigin = _ShockwaveOrigins[s].xyz;
+                float sStartTime = _ShockwaveOrigins[s].w;
+                float sRadius = _ShockwaveParams[s].x;
+                float sSpeed = _ShockwaveParams[s].y;
+                float sForce = _ShockwaveParams[s].z;
+                float sThickness = _ShockwaveParams[s].w;
+
+                float elapsed = _Time - sStartTime;
+                float currentRadius = elapsed * sSpeed;
+                float yDiff = abs(bladeRoot.y - sOrigin.y);
+
+                if (yDiff < 4.0 && elapsed > 0.0)
+                {
+                    float2 diff = bladeRoot.xz - sOrigin.xz;
+                    float dist = length(diff);
+
+                    if (dist <= sRadius)
+                    {
+                        float2 dir = (dist > 0.001) ? (diff / dist) : float2(0, 1);
+                        float distAttenuation = 1.0 - (dist / sRadius);
+
+                        // Active wavefront passing: violent outward & downward blast
+                        float distToFront = dist - currentRadius;
+                        if (abs(distToFront) < sThickness)
+                        {
+                            float crestFactor = 1.0 - (abs(distToFront) / sThickness);
+                            float blastPower = smoothstep(0.0, 1.0, crestFactor) * sForce * distAttenuation;
+                            float3 blastDir = normalize(float3(dir.x, -0.6, dir.y));
+                            shockwavePush += blastDir * blastPower;
+                        }
+                        // Post-wave recovery: spring oscillation in the wake of the blast
+                        else if (currentRadius > dist)
+                        {
+                            float hitTime = dist / max(1.0, sSpeed);
+                            float age = elapsed - hitTime;
+                            float recoverDuration = 1.6;
+
+                            if (age > 0.0 && age < recoverDuration)
+                            {
+                                float progress = age / recoverDuration;
+                                float decay = exp(-progress * 3.5) * (1.0 - progress);
+                                float freq = 13.0 + (hash - 0.5) * 2.0;
+                                float wave = sin(age * freq);
+                                float recoilAmp = sForce * distAttenuation * 0.4 * decay;
+                                shockwavePush += float3(dir.x, 0.0, dir.y) * (wave * recoilAmp);
+                            }
+                        }
+                    }
+                }
+            }
+            interactorPush += shockwavePush;
         }
     }
 
