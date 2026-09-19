@@ -89,6 +89,7 @@ namespace ModernGrassTool.Editor
             gt.castShadows = layer.castShadows;
             gt.shadowCastDensity = layer.shadowCastDensity;
             gt.bladeShadowStrength = layer.bladeShadowStrength;
+            gt.canBeCut = layer.canBeCut;
             gt.cutParticlePrefab = layer.cutParticlePrefab;
             gt.windStrength = layer.windStrength;
             gt.windSpeed = layer.windSpeed;

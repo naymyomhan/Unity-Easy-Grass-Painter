@@ -58,10 +58,6 @@ namespace ModernGrassTool
         private readonly HashSet<Vector2Int> _streamCoordsBuffer = new HashSet<Vector2Int>();
         public static bool isPaintingActive = false;
 
-        [Header("Cut Effects / Particles")]
-        [Tooltip("Global custom Particle System prefab spawned when grass is cut. If null and layer has no prefab, a procedural grass shred particle is used.")]
-        public ParticleSystem cutParticlePrefab;
-
         [Header("Grass Layers")]
         public List<GrassLayer> layers = new List<GrassLayer>();
 
@@ -90,6 +86,20 @@ namespace ModernGrassTool
         private void Awake()
         {
             Instance = this;
+            EnsureTerrainBaker();
+        }
+
+        public ModernRenderTerrainMap EnsureTerrainBaker()
+        {
+            var existing = FindAnyObjectByType<ModernRenderTerrainMap>();
+            if (existing != null) return existing;
+
+            GameObject mapGo = new GameObject("ModernRenderTerrainMap");
+            mapGo.transform.SetParent(transform);
+            mapGo.transform.localPosition = Vector3.zero;
+            var baker = mapGo.AddComponent<ModernRenderTerrainMap>();
+            baker.SetupAndBake();
+            return baker;
         }
 
         private void OnEnable()
@@ -474,7 +484,7 @@ namespace ModernGrassTool
             for (int l = 0; l < layers.Count; l++)
             {
                 GrassLayer layer = layers[l];
-                if (layer == null || layer.PointCount == 0) continue;
+                if (layer == null || layer.PointCount == 0 || !layer.canBeCut) continue;
 
                 layer.EnsureBuffers();
                 queryIndices.Clear();
@@ -548,8 +558,8 @@ namespace ModernGrassTool
                     avgCutPos /= layerCutCount;
                     Vector3 spawnPos = new Vector3(hitPoint.x, avgCutPos.y + 0.25f, hitPoint.z);
 
-                    ParticleSystem layerPrefab = layer.cutParticlePrefab != null ? layer.cutParticlePrefab : cutParticlePrefab;
-                    ModernGrassCutPool pool = ModernGrassCutPool.GetOrCreate(cutParticlePrefab);
+                    ParticleSystem layerPrefab = layer.cutParticlePrefab;
+                    ModernGrassCutPool pool = ModernGrassCutPool.GetOrCreate(layerPrefab);
                     pool.SpawnCutParticle(spawnPos, sampleColor, layerPrefab);
 
                     // If wide area slash (e.g. radius > 2.5m), spawn peripheral bursts to cover the wide radius

@@ -307,7 +307,11 @@ namespace ModernGrassTool.Editor
             {
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
-                    gt.cutParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField("Cut Particle Prefab", gt.cutParticlePrefab, typeof(ParticleSystem), false);
+                    gt.canBeCut = EditorGUILayout.Toggle(new GUIContent("Can Be Cut", "If enabled, this grass species can be cut down by weapons, lawnmowers, or ModernGrassCutter. If disabled, this species cannot be cut."), gt.canBeCut);
+                    if (gt.canBeCut)
+                    {
+                        gt.cutParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField(new GUIContent("Cut Particle Prefab", "Optional custom Particle System spawned when this grass species is cut. If empty, a stylized procedural shred particle is used."), gt.cutParticlePrefab, typeof(ParticleSystem), false);
+                    }
                 }
             }
 

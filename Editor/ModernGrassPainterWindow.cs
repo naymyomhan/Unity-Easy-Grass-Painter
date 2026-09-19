@@ -154,6 +154,7 @@ namespace ModernGrassTool.Editor
                         GameObject go = new GameObject("ModernGrassManager");
                         manager = go.AddComponent<ModernGrassManager>();
                         manager.AddLayer("Lawn Grass");
+                        EnsureTerrainBaker(manager);
                         Undo.RegisterCreatedObjectUndo(go, "Create Grass Manager");
                         Selection.activeGameObject = go;
                     }
@@ -659,7 +660,11 @@ namespace ModernGrassTool.Editor
                     {
                         using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                         {
-                            layer.grassType.cutParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField("Cut Particle Prefab", layer.grassType.cutParticlePrefab, typeof(ParticleSystem), false);
+                            layer.canBeCut = EditorGUILayout.Toggle(new GUIContent("Can Be Cut", "If enabled, this grass species can be cut down by weapons, lawnmowers, or ModernGrassCutter. If disabled, this species cannot be cut."), layer.canBeCut);
+                            if (layer.canBeCut)
+                            {
+                                layer.cutParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField(new GUIContent("Cut Particle Prefab", "Optional custom Particle System spawned when this grass species is cut. If empty, a stylized procedural shred particle is used."), layer.cutParticlePrefab, typeof(ParticleSystem), false);
+                            }
                         }
                     }
 
@@ -669,6 +674,30 @@ namespace ModernGrassTool.Editor
                     {
                         using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                         {
+                            var terrainMap = Object.FindAnyObjectByType<ModernRenderTerrainMap>();
+                            if (terrainMap == null)
+                            {
+                                EditorGUILayout.HelpBox("ModernRenderTerrainMap is missing from the scene. Ground Blending requires this component to bake the ground diffuse texture.", MessageType.Warning);
+                                if (GUILayout.Button("➕ Setup Ground Baker in Scene", GUILayout.Height(24)))
+                                {
+                                    EnsureTerrainBaker(manager);
+                                }
+                                EditorGUILayout.Space(2);
+                            }
+                            else
+                            {
+                                using (new EditorGUILayout.HorizontalScope())
+                                {
+                                    EditorGUILayout.LabelField("Ground Baker:", EditorStyles.miniBoldLabel, GUILayout.Width(85));
+                                    EditorGUILayout.LabelField("Active in Scene", EditorStyles.miniLabel);
+                                    if (GUILayout.Button("🔄 Re-Bake Ground", GUILayout.Width(125), GUILayout.Height(18)))
+                                    {
+                                        terrainMap.SetupAndBake();
+                                    }
+                                }
+                                EditorGUILayout.Space(2);
+                            }
+
                             layer.enableGroundBlend = EditorGUILayout.Toggle("Enable Ground Blend", layer.enableGroundBlend);
                             if (layer.enableGroundBlend)
                             {
@@ -1362,6 +1391,24 @@ namespace ModernGrassTool.Editor
             }
 
             return totalRemoved;
+        }
+
+        public static ModernRenderTerrainMap EnsureTerrainBaker(ModernGrassManager mgr)
+        {
+            var existing = Object.FindAnyObjectByType<ModernRenderTerrainMap>();
+            if (existing != null) return existing;
+
+            Transform parent = mgr != null ? mgr.transform : null;
+            GameObject mapGo = new GameObject("ModernRenderTerrainMap");
+            if (parent != null)
+            {
+                mapGo.transform.SetParent(parent);
+                mapGo.transform.localPosition = Vector3.zero;
+            }
+            var baker = mapGo.AddComponent<ModernRenderTerrainMap>();
+            baker.SetupAndBake();
+            Undo.RegisterCreatedObjectUndo(mapGo, "Create Ground Baker");
+            return baker;
         }
     }
 }

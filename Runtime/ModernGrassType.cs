@@ -117,7 +117,9 @@ namespace ModernGrassTool
         public bool randomYRotation = true;
 
         [Header("Cut VFX and Particles")]
-        [Tooltip("Custom Particle System prefab spawned when this grass type is cut.")]
+        [Tooltip("If enabled, this grass type can be cut by weapons, lawnmowers, or ModernGrassCutter. If disabled, this species cannot be cut.")]
+        public bool canBeCut = true;
+        [Tooltip("Custom Particle System prefab spawned when this grass type is cut. If null, a procedural shred particle is used.")]
         public ParticleSystem cutParticlePrefab;
 
         [Header("Shading and Lighting")]

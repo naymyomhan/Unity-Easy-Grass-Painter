@@ -55,6 +55,7 @@ namespace ModernGrassTool
         [SerializeField] private bool _castShadows = true;
         [SerializeField] private float _shadowCastDensity = 0.45f;
         [SerializeField] private float _bladeShadowStrength = 0.5f;
+        [SerializeField] private bool _canBeCut = true;
         [SerializeField] private ParticleSystem _cutParticlePrefab;
         [SerializeField] private float _windStrength = 0.3f;
         [SerializeField] private float _windSpeed = 2.0f;
@@ -146,6 +147,7 @@ namespace ModernGrassTool
         public bool castShadows { get => grassType != null ? grassType.castShadows : _castShadows; set { if (grassType != null) grassType.castShadows = value; else _castShadows = value; } }
         public float shadowCastDensity { get => grassType != null ? grassType.shadowCastDensity : _shadowCastDensity; set { if (grassType != null) grassType.shadowCastDensity = value; else _shadowCastDensity = value; } }
         public float bladeShadowStrength { get => grassType != null ? grassType.bladeShadowStrength : _bladeShadowStrength; set { if (grassType != null) grassType.bladeShadowStrength = value; else _bladeShadowStrength = value; } }
+        public bool canBeCut { get => grassType != null ? grassType.canBeCut : _canBeCut; set { if (grassType != null) grassType.canBeCut = value; else _canBeCut = value; } }
         public ParticleSystem cutParticlePrefab { get => grassType != null ? grassType.cutParticlePrefab : _cutParticlePrefab; set { if (grassType != null) grassType.cutParticlePrefab = value; else _cutParticlePrefab = value; } }
         public float windStrength { get => grassType != null ? grassType.windStrength : _windStrength; set { if (grassType != null) grassType.windStrength = value; else _windStrength = value; } }
         public float windSpeed { get => grassType != null ? grassType.windSpeed : _windSpeed; set { if (grassType != null) grassType.windSpeed = value; else _windSpeed = value; } }

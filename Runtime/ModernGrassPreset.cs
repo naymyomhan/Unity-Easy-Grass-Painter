@@ -44,6 +44,10 @@ namespace ModernGrassTool
         [Range(0f, 1f)] public float shadowCastDensity = 0.45f;
         [Range(0f, 1f)] public float bladeShadowStrength = 0.5f;
 
+        [Header("Cut VFX and Particles")]
+        public bool canBeCut = true;
+        public ParticleSystem cutParticlePrefab;
+
         [Header("Wind")]
         [Range(0f, 2f)] public float windStrength = 0.3f;
         [Range(0f, 10f)] public float windSpeed = 2.0f;
@@ -105,6 +109,9 @@ namespace ModernGrassTool
             layer.shadowCastDensity = shadowCastDensity;
             layer.bladeShadowStrength = bladeShadowStrength;
 
+            layer.canBeCut = canBeCut;
+            layer.cutParticlePrefab = cutParticlePrefab;
+
             layer.windStrength = windStrength;
             layer.windSpeed = windSpeed;
             layer.windScale = windScale;
@@ -165,6 +172,9 @@ namespace ModernGrassTool
             castShadows = layer.castShadows;
             shadowCastDensity = layer.shadowCastDensity;
             bladeShadowStrength = layer.bladeShadowStrength;
+
+            canBeCut = layer.canBeCut;
+            cutParticlePrefab = layer.cutParticlePrefab;
 
             windStrength = layer.windStrength;
             windSpeed = layer.windSpeed;
