@@ -29,9 +29,10 @@ namespace ModernGrassTool
 
         public readonly List<TrailNode> trailHistory = new List<TrailNode>();
         private Vector3 _lastTrailPos;
-        private const float MinTrailDist = 0.25f;
-        private const int MaxTrailNodes = 16;
-        private const float MaxTrailLife = 5.0f;
+        private bool _wasMoving = false;
+        private const float MinTrailDist = 0.12f;
+        private const int MaxTrailNodes = 24;
+        private const float MaxTrailLife = 12.0f;
 
         private void OnEnable()
         {
@@ -40,6 +41,7 @@ namespace ModernGrassTool
                 ActiveInteractors.Add(this);
             }
             _lastTrailPos = transform.position;
+            _wasMoving = false;
             trailHistory.Clear();
         }
 
@@ -69,6 +71,21 @@ namespace ModernGrassTool
             if (dist >= MinTrailDist)
             {
                 Vector2 moveDir = new Vector2(curPos.x - _lastTrailPos.x, curPos.z - _lastTrailPos.z).normalized;
+
+                // Record previous resting position when moving away
+                if (!_wasMoving && trailHistory.Count < MaxTrailNodes)
+                {
+                    trailHistory.Insert(0, new TrailNode
+                    {
+                        position = _lastTrailPos,
+                        moveDirection = moveDir,
+                        timeStamp = currentTime,
+                        radius = radius,
+                        strength = strength
+                    });
+                }
+                _wasMoving = true;
+
                 trailHistory.Insert(0, new TrailNode
                 {
                     position = curPos,
@@ -78,12 +95,16 @@ namespace ModernGrassTool
                     strength = strength
                 });
 
-                if (trailHistory.Count > MaxTrailNodes)
+                while (trailHistory.Count > MaxTrailNodes)
                 {
                     trailHistory.RemoveAt(trailHistory.Count - 1);
                 }
 
                 _lastTrailPos = curPos;
+            }
+            else if (dist < 0.01f)
+            {
+                _wasMoving = false;
             }
 
             // Prune expired nodes

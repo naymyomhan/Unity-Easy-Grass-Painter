@@ -628,7 +628,7 @@ namespace ModernGrassTool
 
             float currentTime = 0f;
 #if UNITY_EDITOR
-            currentTime = Application.isPlaying ? Time.time : (float)UnityEditor.EditorApplication.timeSinceStartup;
+            currentTime = Application.isPlaying ? Time.time : (float)Time.realtimeSinceStartup;
 #else
             currentTime = Time.time;
 #endif
@@ -676,7 +676,7 @@ namespace ModernGrassTool
                         }
                     }
 
-                    RenderCustomMeshLayer(layer, camera, interactorCount, trailCount);
+                    RenderCustomMeshLayer(layer, camera, interactorCount, trailCount, currentTime);
                     continue;
                 }
 
@@ -784,8 +784,8 @@ namespace ModernGrassTool
                     computeShader.SetVectorArray("_InteractorParams", _interactorParams);
                 }
 
-                computeShader.SetInt("_TrailCount", (layerInteract && layer.enableTrailPersistence) ? trailCount : 0);
-                if (layerInteract && layer.enableTrailPersistence && trailCount > 0)
+                computeShader.SetInt("_TrailCount", layerInteract ? trailCount : 0);
+                if (layerInteract && trailCount > 0)
                 {
                     computeShader.SetVectorArray("_TrailPoints", _trailPoints);
                     computeShader.SetVectorArray("_TrailParams", _trailParams);
@@ -858,7 +858,7 @@ namespace ModernGrassTool
             }
         }
 
-        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount, int trailCount)
+        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount, int trailCount, float currentTime)
         {
             if (layer.grassType == null || layer.grassType.customMesh == null || layer.grassType.customMaterial == null)
                 return;
@@ -895,6 +895,7 @@ namespace ModernGrassTool
             mat.SetFloat("_EnableTrailPersistence", (layerInteract && layer.enableTrailPersistence) ? 1f : 0f);
             mat.SetFloat("_TrailDuration", layer.trailDuration);
             mat.SetFloat("_TrailDepression", layer.trailDepression);
+            mat.SetFloat("_CurrentTime", currentTime);
 
             mat.SetInt("_InteractorCount", layerInteract ? interactorCount : 0);
             if (layerInteract && interactorCount > 0)
@@ -903,8 +904,8 @@ namespace ModernGrassTool
                 mat.SetVectorArray("_InteractorParams", _interactorParams);
             }
 
-            mat.SetInt("_TrailCount", (layerInteract && layer.enableTrailPersistence) ? trailCount : 0);
-            if (layerInteract && layer.enableTrailPersistence && trailCount > 0)
+            mat.SetInt("_TrailCount", layerInteract ? trailCount : 0);
+            if (layerInteract && trailCount > 0)
             {
                 mat.SetVectorArray("_TrailPoints", _trailPoints);
                 mat.SetVectorArray("_TrailParams", _trailParams);
