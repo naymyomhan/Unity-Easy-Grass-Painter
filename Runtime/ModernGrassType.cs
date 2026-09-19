@@ -170,8 +170,8 @@ namespace ModernGrassTool
         [Header("Player & Object Interaction")]
         [Tooltip("If enabled, characters, animals, and objects push and bend this grass species when moving through it.")]
         public bool enableInteraction = false;
-        [Range(0.0f, 1.0f)]
+        [Range(0.0f, 10.0f)]
         [Tooltip("Harmonic spring wobble as blades rebound when released from an interactor.")]
-        public float elasticOscillation = 0.5f;
+        public float elasticOscillation = 1.0f;
     }
 }

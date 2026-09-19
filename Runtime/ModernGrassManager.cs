@@ -75,6 +75,8 @@ namespace ModernGrassTool
         private int _kernelResetArgs = -1;
         private Vector4[] _interactorArray = new Vector4[16];
         private Vector4[] _interactorParams = new Vector4[16];
+        private Vector4[] _impulsePoints = new Vector4[32];
+        private Vector4[] _impulseParams = new Vector4[32];
 
         private Plane[] _frustumPlanes = new Plane[6];
         private Vector4[] _frustumPlaneVectors = new Vector4[6];
@@ -654,7 +656,7 @@ namespace ModernGrassTool
                         }
                     }
 
-                    RenderCustomMeshLayer(layer, camera, interactorCount);
+                    RenderCustomMeshLayer(layer, camera, interactorCount, currentTime);
                     continue;
                 }
 
@@ -755,6 +757,40 @@ namespace ModernGrassTool
                     computeShader.SetVectorArray("_InteractorParams", _interactorParams);
                 }
 
+                int impulseCount = 0;
+                if (layerInteract && layer.elasticOscillation > 0.01f && ModernGrassInteractor.ActiveInteractors != null)
+                {
+                    float maxImpulseDuration = Mathf.Lerp(1.2f, 3.5f, Mathf.Clamp01(layer.elasticOscillation / 10f));
+                    for (int interIdx = 0; interIdx < ModernGrassInteractor.ActiveInteractors.Count; interIdx++)
+                    {
+                        var inter = ModernGrassInteractor.ActiveInteractors[interIdx];
+                        if (inter == null || !inter.gameObject.activeInHierarchy || inter.impulseCount == 0) continue;
+
+                        int count = inter.impulseCount;
+                        for (int k = 0; k < count; k++)
+                        {
+                            int idx = (inter.ImpulseHead - 1 - k + ModernGrassInteractor.MaxImpulses) % ModernGrassInteractor.MaxImpulses;
+                            var imp = inter.impulses[idx];
+                            float age = currentTime - imp.time;
+                            if (age >= 0f && age < maxImpulseDuration)
+                            {
+                                _impulsePoints[impulseCount] = new Vector4(imp.position.x, imp.position.y, imp.position.z, imp.time);
+                                _impulseParams[impulseCount] = new Vector4(imp.direction.x, imp.direction.y, imp.radius, maxImpulseDuration);
+                                impulseCount++;
+                                if (impulseCount >= 32) break;
+                            }
+                        }
+                        if (impulseCount >= 32) break;
+                    }
+                }
+
+                computeShader.SetInt("_ImpulseCount", impulseCount);
+                if (impulseCount > 0)
+                {
+                    computeShader.SetVectorArray("_ImpulsePoints", _impulsePoints);
+                    computeShader.SetVectorArray("_ImpulseParams", _impulseParams);
+                }
+
                 // 3. Dispatch GPU culling & blade generation
                 int threadGroups = Mathf.CeilToInt(totalBladeCount / 64f);
                 computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
@@ -822,7 +858,7 @@ namespace ModernGrassTool
             }
         }
 
-        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount)
+        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount, float currentTime)
         {
             if (layer.grassType == null || layer.grassType.customMesh == null || layer.grassType.customMaterial == null)
                 return;
@@ -858,6 +894,40 @@ namespace ModernGrassTool
             {
                 mat.SetVectorArray("_Interactors", _interactorArray);
                 mat.SetVectorArray("_InteractorParams", _interactorParams);
+            }
+
+            int impulseCount = 0;
+            if (layerInteract && layer.elasticOscillation > 0.01f && ModernGrassInteractor.ActiveInteractors != null)
+            {
+                float maxImpulseDuration = Mathf.Lerp(1.2f, 3.5f, Mathf.Clamp01(layer.elasticOscillation / 10f));
+                for (int interIdx = 0; interIdx < ModernGrassInteractor.ActiveInteractors.Count; interIdx++)
+                {
+                    var inter = ModernGrassInteractor.ActiveInteractors[interIdx];
+                    if (inter == null || !inter.gameObject.activeInHierarchy || inter.impulseCount == 0) continue;
+
+                    int count = inter.impulseCount;
+                    for (int k = 0; k < count; k++)
+                    {
+                        int idx = (inter.ImpulseHead - 1 - k + ModernGrassInteractor.MaxImpulses) % ModernGrassInteractor.MaxImpulses;
+                        var imp = inter.impulses[idx];
+                        float age = currentTime - imp.time;
+                        if (age >= 0f && age < maxImpulseDuration)
+                        {
+                            _impulsePoints[impulseCount] = new Vector4(imp.position.x, imp.position.y, imp.position.z, imp.time);
+                            _impulseParams[impulseCount] = new Vector4(imp.direction.x, imp.direction.y, imp.radius, maxImpulseDuration);
+                            impulseCount++;
+                            if (impulseCount >= 32) break;
+                        }
+                    }
+                    if (impulseCount >= 32) break;
+                }
+            }
+
+            mat.SetInt("_ImpulseCount", impulseCount);
+            if (impulseCount > 0)
+            {
+                mat.SetVectorArray("_ImpulsePoints", _impulsePoints);
+                mat.SetVectorArray("_ImpulseParams", _impulseParams);
             }
 
             int visibleCount = layer.visibleIDs.Count;

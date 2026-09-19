@@ -720,7 +720,7 @@ namespace ModernGrassTool.Editor
                             if (layer.enableInteraction)
                             {
                                 EditorGUI.indentLevel++;
-                                layer.elasticOscillation = EditorGUILayout.Slider(new GUIContent("Spring Wobble", "How much blades wobble and shake as they spring back to their rest position after being pushed."), layer.elasticOscillation, 0.0f, 1.0f);
+                                layer.elasticOscillation = EditorGUILayout.Slider(new GUIContent("Spring Wobble", "How much blades wobble and shake as they spring back to their rest position after being pushed."), layer.elasticOscillation, 0.0f, 10.0f);
                                 EditorGUI.indentLevel--;
                             }
                         }

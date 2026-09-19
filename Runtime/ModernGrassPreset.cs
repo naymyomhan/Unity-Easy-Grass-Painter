@@ -76,7 +76,7 @@ namespace ModernGrassTool
 
         [Header("Player & Object Interaction")]
         public bool enableInteraction = false;
-        [Range(0.0f, 1.0f)] public float elasticOscillation = 0.5f;
+        [Range(0.0f, 10.0f)] public float elasticOscillation = 1.0f;
 
         public void ApplyTo(GrassLayer layer)
         {
