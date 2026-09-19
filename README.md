@@ -25,6 +25,17 @@ A high-performance, GPU-driven procedural stylized grass system for **Unity Univ
 https://github.com/naymyomhan/Unity-Easy-Grass-Painter.git
 ```
 
+## 🎮 Gameplay & Scripting Integration
+
+Easy Grass Painter includes high-performance gameplay components and C# static APIs for seamless integration into combat, abilities, characters, and environmental mechanics:
+
+- **🏃 Player & NPC Interaction**: Add `ModernGrassInteractor` to any moving entity.
+- **✂️ Grass Cutting & Slashing**: Call `ModernGrassManager.CutGrassAt(...)` or add `ModernGrassCutter`.
+- **💥 Explosions & Shockwaves**: Call `ModernGrassManager.TriggerShockwave(...)` or add `ModernGrassShockwave`.
+- **🌪️ Wind Blasts & Rotor Wash**: Add `ModernGrassWindZone` (Directional / 360° Omnidirectional) or call `ModernGrassManager.TriggerWindBurst(...)`.
+
+👉 **[Read the Full Scripting & Gameplay Integration Guide](INTEGRATION_GUIDE.md)** for copy-paste C# examples and API references.
+
 ## 📄 License
 
 MIT License. Free to use in commercial and personal projects.
