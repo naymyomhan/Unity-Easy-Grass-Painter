@@ -75,6 +75,8 @@ namespace ModernGrassTool
         private int _kernelResetArgs = -1;
         private Vector4[] _interactorArray = new Vector4[16];
         private Vector4[] _interactorParams = new Vector4[16];
+        private Vector4[] _trailPoints = new Vector4[32]; // xyz = pos, w = timestamp
+        private Vector4[] _trailParams = new Vector4[32]; // x = radius, y = strength, z = dirX, w = dirZ
 
         private Plane[] _frustumPlanes = new Plane[6];
         private Vector4[] _frustumPlaneVectors = new Vector4[6];
@@ -264,18 +266,9 @@ namespace ModernGrassTool
 #if UNITY_EDITOR
             if (computeShader == null)
             {
-                string[] guids = UnityEditor.AssetDatabase.FindAssets("ModernGrassBlades t:ComputeShader");
-                if (guids != null && guids.Length > 0)
-                {
-                    string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[0]);
-                    computeShader = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>(path);
-                }
-                if (computeShader == null)
-                {
-                    computeShader = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                        "Assets/ModernGrassTool/Runtime/ModernGrassBlades.compute"
-                    );
-                }
+                computeShader = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                    "Assets/ModernGrassTool/Runtime/ModernGrassBlades.compute"
+                );
             }
 #endif
 
@@ -351,11 +344,11 @@ namespace ModernGrassTool
                 }
                 else
                 {
-                    var interactor = UnityEngine.Object.FindFirstObjectByType<ModernGrassInteractor>();
-                    if (interactor != null)
+                    var player = UnityEngine.Object.FindFirstObjectByType<ThirdPersonPlayerController>();
+                    if (player != null)
                     {
-                        playerReference = interactor.transform;
-                        refPos = interactor.transform.position;
+                        playerReference = player.transform;
+                        refPos = player.transform.position;
                     }
                 }
 
@@ -613,6 +606,26 @@ namespace ModernGrassTool
                 }
             }
 
+            // Gather active trail history points
+            int trailCount = 0;
+            if (ModernGrassInteractor.ActiveInteractors != null)
+            {
+                for (int i = 0; i < ModernGrassInteractor.ActiveInteractors.Count && trailCount < 32; i++)
+                {
+                    var inter = ModernGrassInteractor.ActiveInteractors[i];
+                    if (inter != null && inter.gameObject.activeInHierarchy && inter.trailHistory != null)
+                    {
+                        for (int t = 0; t < inter.trailHistory.Count && trailCount < 32; t++)
+                        {
+                            var node = inter.trailHistory[t];
+                            _trailPoints[trailCount] = new Vector4(node.position.x, node.position.y, node.position.z, node.timeStamp);
+                            _trailParams[trailCount] = new Vector4(node.radius, node.strength, node.moveDirection.x, node.moveDirection.y);
+                            trailCount++;
+                        }
+                    }
+                }
+            }
+
             float currentTime = 0f;
 #if UNITY_EDITOR
             currentTime = Application.isPlaying ? Time.time : (float)UnityEditor.EditorApplication.timeSinceStartup;
@@ -663,7 +676,7 @@ namespace ModernGrassTool
                         }
                     }
 
-                    RenderCustomMeshLayer(layer, camera, interactorCount);
+                    RenderCustomMeshLayer(layer, camera, interactorCount, trailCount);
                     continue;
                 }
 
@@ -752,11 +765,30 @@ namespace ModernGrassTool
                 computeShader.SetVector("_WindDirection", windDirection);
                 computeShader.SetFloat("_Time", currentTime);
 
-                computeShader.SetInt("_InteractorCount", interactorCount);
-                if (interactorCount > 0)
+                // Layer-based interaction & trail uniforms
+                bool layerInteract = layer.enableInteraction;
+                computeShader.SetFloat("_EnableInteraction", layerInteract ? 1f : 0f);
+                computeShader.SetFloat("_InteractionStrength", layer.interactionStrength);
+                computeShader.SetFloat("_InteractionFlatten", layer.interactionFlatten);
+                computeShader.SetFloat("_ElasticRecoverySpeed", layer.elasticRecoverySpeed);
+                computeShader.SetFloat("_ElasticOscillation", layer.elasticOscillation);
+
+                computeShader.SetFloat("_EnableTrailPersistence", (layerInteract && layer.enableTrailPersistence) ? 1f : 0f);
+                computeShader.SetFloat("_TrailDuration", layer.trailDuration);
+                computeShader.SetFloat("_TrailDepression", layer.trailDepression);
+
+                computeShader.SetInt("_InteractorCount", layerInteract ? interactorCount : 0);
+                if (layerInteract && interactorCount > 0)
                 {
                     computeShader.SetVectorArray("_Interactors", _interactorArray);
                     computeShader.SetVectorArray("_InteractorParams", _interactorParams);
+                }
+
+                computeShader.SetInt("_TrailCount", (layerInteract && layer.enableTrailPersistence) ? trailCount : 0);
+                if (layerInteract && layer.enableTrailPersistence && trailCount > 0)
+                {
+                    computeShader.SetVectorArray("_TrailPoints", _trailPoints);
+                    computeShader.SetVectorArray("_TrailParams", _trailParams);
                 }
 
                 // 3. Dispatch GPU culling & blade generation
@@ -826,7 +858,7 @@ namespace ModernGrassTool
             }
         }
 
-        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount)
+        private void RenderCustomMeshLayer(GrassLayer layer, Camera camera, int interactorCount, int trailCount)
         {
             if (layer.grassType == null || layer.grassType.customMesh == null || layer.grassType.customMaterial == null)
                 return;
@@ -852,12 +884,30 @@ namespace ModernGrassTool
                 mat.SetFloat("_EnableGroundBlend", 0f);
             }
 
-            // Interactor setup for Custom Mesh foliage
-            mat.SetInt("_InteractorCount", interactorCount);
-            if (interactorCount > 0)
+            // Layer-based interaction & trail setup for Custom Mesh foliage
+            bool layerInteract = layer.enableInteraction;
+            mat.SetFloat("_EnableInteraction", layerInteract ? 1f : 0f);
+            mat.SetFloat("_InteractionStrength", layer.interactionStrength);
+            mat.SetFloat("_InteractionFlatten", layer.interactionFlatten);
+            mat.SetFloat("_ElasticRecoverySpeed", layer.elasticRecoverySpeed);
+            mat.SetFloat("_ElasticOscillation", layer.elasticOscillation);
+
+            mat.SetFloat("_EnableTrailPersistence", (layerInteract && layer.enableTrailPersistence) ? 1f : 0f);
+            mat.SetFloat("_TrailDuration", layer.trailDuration);
+            mat.SetFloat("_TrailDepression", layer.trailDepression);
+
+            mat.SetInt("_InteractorCount", layerInteract ? interactorCount : 0);
+            if (layerInteract && interactorCount > 0)
             {
                 mat.SetVectorArray("_Interactors", _interactorArray);
                 mat.SetVectorArray("_InteractorParams", _interactorParams);
+            }
+
+            mat.SetInt("_TrailCount", (layerInteract && layer.enableTrailPersistence) ? trailCount : 0);
+            if (layerInteract && layer.enableTrailPersistence && trailCount > 0)
+            {
+                mat.SetVectorArray("_TrailPoints", _trailPoints);
+                mat.SetVectorArray("_TrailParams", _trailParams);
             }
 
             int visibleCount = layer.visibleIDs.Count;

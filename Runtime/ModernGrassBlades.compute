@@ -89,10 +89,23 @@ float _WindSmoothness;
 float3 _WindDirection;
 float _Time;
 
-// Interactor properties
+// Interactor & Elastic Push properties
+float _EnableInteraction;
+float _InteractionStrength;
+float _InteractionFlatten;
+float _ElasticRecoverySpeed;
+float _ElasticOscillation;
+float _EnableTrailPersistence;
+float _TrailDuration;
+float _TrailDepression;
+
 int _InteractorCount;
 float4 _Interactors[16]; // xyz = world pos, w = radius
 float4 _InteractorParams[16]; // x = radius, y = strength
+
+int _TrailCount;
+float4 _TrailPoints[32]; // xyz = world pos, w = timestamp
+float4 _TrailParams[32]; // x = radius, y = strength, z = dir.x, w = dir.z
 
 // -------------------------------------------------------------------------
 // Simplex 2D Noise Implementation (Stefan Gustavson / Ian McEwan)
@@ -335,29 +348,69 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float forwardDisplacement = baseDisplacement + gustPush;
     float3 windOffset = (windDir * forwardDisplacement + crossWind * crossSway) * (_WindStrength * motionMult);
 
-    // --- 9. OPTIMIZED INTERACTORS: Check Interactors ONCE per blade ---
+    // --- 9. OPTIMIZED INTERACTORS: Check Interactors & Walking Trails ONCE per blade ---
     float3 interactorPush = float3(0, 0, 0);
-    if (_InteractorCount > 0 && motionMult > 0.001)
+    if (_EnableInteraction > 0.5 && motionMult > 0.001)
     {
-        for (int i = 0; i < _InteractorCount; i++)
+        // 9a. Direct Active Interactors
+        if (_InteractorCount > 0)
         {
-            float3 interPos = _Interactors[i].xyz;
-            float interRadius = _InteractorParams[i].x;
-            float interStrength = _InteractorParams[i].y;
-
-            if (interStrength > 0.001 && interRadius > 0.01)
+            for (int i = 0; i < _InteractorCount; i++)
             {
-                float2 xzOffset = bladeRoot.xz - interPos.xz;
-                float xzDist = length(xzOffset);
-                float yDist = abs(bladeRoot.y - (interPos.y - 0.5));
+                float3 interPos = _Interactors[i].xyz;
+                float interRadius = _InteractorParams[i].x;
+                float interStrength = _InteractorParams[i].y * _InteractionStrength;
 
-                if (xzDist < interRadius && yDist < 2.5)
+                if (interStrength > 0.001 && interRadius > 0.01)
                 {
-                    float2 xzDir = (xzDist > 0.001) ? normalize(xzOffset) : float2(0, 1);
-                    float factor = 1.0 - (xzDist / interRadius);
-                    float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.75);
-                    float3 pushDir = normalize(float3(xzDir.x, -0.35, xzDir.y));
-                    interactorPush += pushDir * pushAmount;
+                    float2 xzOffset = bladeRoot.xz - interPos.xz;
+                    float xzDist = length(xzOffset);
+                    float yDist = abs(bladeRoot.y - (interPos.y - 0.5));
+
+                    if (xzDist < interRadius && yDist < 2.5)
+                    {
+                        float2 xzDir = (xzDist > 0.001) ? normalize(xzOffset) : float2(0, 1);
+                        float factor = 1.0 - (xzDist / interRadius);
+                        float pushAmount = smoothstep(0.0, 1.0, factor) * interStrength * (interRadius * 0.75);
+                        float downPush = -lerp(0.2, 0.9, _InteractionFlatten);
+                        float3 pushDir = normalize(float3(xzDir.x, downPush, xzDir.y));
+                        interactorPush += pushDir * pushAmount;
+                    }
+                }
+            }
+        }
+
+        // 9b. Walking Trail Persistence & Elastic Recovery
+        if (_EnableTrailPersistence > 0.5 && _TrailCount > 0)
+        {
+            for (int j = 0; j < _TrailCount; j++)
+            {
+                float4 tPosTime = _TrailPoints[j];
+                float4 tParams = _TrailParams[j];
+                float age = _Time - tPosTime.w;
+
+                if (age >= 0.0 && age < _TrailDuration)
+                {
+                    float progress = age / max(_TrailDuration, 0.01);
+                    float2 tOffset = bladeRoot.xz - tPosTime.xz;
+                    float tDist = length(tOffset);
+                    float tRadius = tParams.x;
+                    float tStrength = tParams.y * _InteractionStrength;
+
+                    if (tDist < tRadius)
+                    {
+                        float falloff = 1.0 - (tDist / tRadius);
+                        float factor = smoothstep(0.0, 1.0, falloff);
+                        float decay = pow(saturate(1.0 - progress), max(0.2, 2.0 * _ElasticRecoverySpeed));
+                        float bounce = sin(progress * 6.28318 * _ElasticRecoverySpeed) * exp(-progress * 4.0) * _ElasticOscillation;
+                        float netFactor = saturate(decay + bounce) * factor * tStrength;
+
+                        float2 walkDir = tParams.zw;
+                        float2 pushXZ = (length(walkDir) > 0.1) ? normalize(walkDir * 0.7 + normalize(tOffset + float2(0.0001, 0.0001)) * 0.3) : normalize(tOffset + float2(0.0001, 0.0001));
+                        float trailDown = -lerp(0.3, 0.95, _TrailDepression);
+                        float3 trailPushDir = normalize(float3(pushXZ.x, trailDown, pushXZ.y));
+                        interactorPush += trailPushDir * (netFactor * tRadius * 0.65);
+                    }
                 }
             }
         }

@@ -34,6 +34,7 @@ namespace ModernGrassTool.Editor
         private static bool _showWindSettings = true;
         private static bool _showShadowLODSettings = true;
         private static bool _showCutSettings = true;
+        private static bool _showInteractionSettings = false;
 
         private void OnEnable()
         {
@@ -311,6 +312,36 @@ namespace ModernGrassTool.Editor
                     if (gt.canBeCut)
                     {
                         gt.cutParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField(new GUIContent("Cut Particle Prefab", "Optional custom Particle System spawned when this grass species is cut. If empty, a stylized procedural shred particle is used."), gt.cutParticlePrefab, typeof(ParticleSystem), false);
+                    }
+                }
+            }
+
+            // 8. Player & Object Interaction
+            _showInteractionSettings = ModernGrassUI.DrawSectionHeader("Player & Object Interaction", _showInteractionSettings, "🏃", ModernGrassUI.ColorInteraction);
+            if (_showInteractionSettings)
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    gt.enableInteraction = EditorGUILayout.Toggle(new GUIContent("Enable Interaction", "Enables real-time push and deformation when players or objects with ModernGrassInteractor touch this grass layer."), gt.enableInteraction);
+                    if (gt.enableInteraction)
+                    {
+                        EditorGUI.indentLevel++;
+                        gt.interactionStrength = EditorGUILayout.Slider(new GUIContent("Push Strength", "How strongly grass bends away from interactors."), gt.interactionStrength, 0.1f, 3.0f);
+                        gt.interactionFlatten = EditorGUILayout.Slider(new GUIContent("Flatten Amount", "How much blades get pressed flat against the ground versus pushed sideways."), gt.interactionFlatten, 0.0f, 1.0f);
+                        gt.elasticRecoverySpeed = EditorGUILayout.Slider(new GUIContent("Recovery Speed", "How fast blades spring back up to vertical orientation."), gt.elasticRecoverySpeed, 0.2f, 5.0f);
+                        gt.elasticOscillation = EditorGUILayout.Slider(new GUIContent("Oscillation Bounce", "Elastic springiness/bounce back when releasing from an interactor."), gt.elasticOscillation, 0.0f, 1.0f);
+                        EditorGUI.indentLevel--;
+
+                        EditorGUILayout.Space(4);
+                        EditorGUILayout.LabelField("Footprint / Walking Trail", EditorStyles.boldLabel);
+                        gt.enableTrailPersistence = EditorGUILayout.Toggle(new GUIContent("Enable Walking Trail", "Keeps trampled footsteps and walking trails depressed before elastically recovering."), gt.enableTrailPersistence);
+                        if (gt.enableTrailPersistence)
+                        {
+                            EditorGUI.indentLevel++;
+                            gt.trailDuration = EditorGUILayout.Slider(new GUIContent("Trail Duration (sec)", "Time in seconds before footprints fully recover."), gt.trailDuration, 0.5f, 10.0f);
+                            gt.trailDepression = EditorGUILayout.Slider(new GUIContent("Trail Depression", "Downward flatten depth of footsteps in the grass."), gt.trailDepression, 0.0f, 1.0f);
+                            EditorGUI.indentLevel--;
+                        }
                     }
                 }
             }

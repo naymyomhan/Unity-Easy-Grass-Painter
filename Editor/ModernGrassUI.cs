@@ -14,6 +14,7 @@ namespace ModernGrassTool.Editor
         public static readonly Color ColorShadows       = new Color(0.68f, 0.48f, 0.95f, 1.0f); // Lavender Purple
         public static readonly Color ColorCutVFX        = new Color(0.38f, 0.88f, 0.40f, 1.0f); // Mint Green
         public static readonly Color ColorGroundBlend   = new Color(0.92f, 0.58f, 0.22f, 1.0f); // Earth Ochre
+        public static readonly Color ColorInteraction   = new Color(0.15f, 0.75f, 0.95f, 1.0f); // Neon Cyan / Motion Blue
         public static readonly Color ColorMesh          = new Color(0.95f, 0.48f, 0.78f, 1.0f); // Blossom Pink
         public static readonly Color ColorTexture       = new Color(0.98f, 0.72f, 0.22f, 1.0f); // Golden Amber Wheat
         public static readonly Color ColorPalette       = new Color(0.30f, 0.80f, 0.60f, 1.0f); // Sage Green

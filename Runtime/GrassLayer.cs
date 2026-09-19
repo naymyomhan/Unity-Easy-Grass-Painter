@@ -70,6 +70,16 @@ namespace ModernGrassTool
         [SerializeField] private int _minSegmentCount = 1;
         [SerializeField] private int _cullingTreeDepth = 4;
 
+        // Player & Object Interaction
+        [SerializeField] private bool _enableInteraction = false;
+        [SerializeField] private float _interactionStrength = 1.0f;
+        [SerializeField] private float _interactionFlatten = 0.5f;
+        [SerializeField] private float _elasticRecoverySpeed = 1.5f;
+        [SerializeField] private float _elasticOscillation = 0.3f;
+        [SerializeField] private bool _enableTrailPersistence = false;
+        [SerializeField] private float _trailDuration = 1.5f;
+        [SerializeField] private float _trailDepression = 0.7f;
+
         // World-Space Noise Color Tint & Waves
         [SerializeField] private bool _enableColorNoise = true;
         [SerializeField] private Color _noiseTopColor = new Color(0.72f, 0.85f, 0.30f, 1.0f);
@@ -161,6 +171,15 @@ namespace ModernGrassTool
         public float segmentLODEndDist { get => grassType != null ? grassType.segmentLODEndDist : _segmentLODEndDist; set { if (grassType != null) grassType.segmentLODEndDist = value; else _segmentLODEndDist = value; } }
         public int minSegmentCount { get => grassType != null ? grassType.minSegmentCount : _minSegmentCount; set { if (grassType != null) grassType.minSegmentCount = value; else _minSegmentCount = value; } }
         public int cullingTreeDepth { get => _cullingTreeDepth; set => _cullingTreeDepth = value; }
+
+        public bool enableInteraction { get => grassType != null ? grassType.enableInteraction : _enableInteraction; set { if (grassType != null) grassType.enableInteraction = value; else _enableInteraction = value; } }
+        public float interactionStrength { get => grassType != null ? grassType.interactionStrength : _interactionStrength; set { if (grassType != null) grassType.interactionStrength = value; else _interactionStrength = value; } }
+        public float interactionFlatten { get => grassType != null ? grassType.interactionFlatten : _interactionFlatten; set { if (grassType != null) grassType.interactionFlatten = value; else _interactionFlatten = value; } }
+        public float elasticRecoverySpeed { get => grassType != null ? grassType.elasticRecoverySpeed : _elasticRecoverySpeed; set { if (grassType != null) grassType.elasticRecoverySpeed = value; else _elasticRecoverySpeed = value; } }
+        public float elasticOscillation { get => grassType != null ? grassType.elasticOscillation : _elasticOscillation; set { if (grassType != null) grassType.elasticOscillation = value; else _elasticOscillation = value; } }
+        public bool enableTrailPersistence { get => grassType != null ? grassType.enableTrailPersistence : _enableTrailPersistence; set { if (grassType != null) grassType.enableTrailPersistence = value; else _enableTrailPersistence = value; } }
+        public float trailDuration { get => grassType != null ? grassType.trailDuration : _trailDuration; set { if (grassType != null) grassType.trailDuration = value; else _trailDuration = value; } }
+        public float trailDepression { get => grassType != null ? grassType.trailDepression : _trailDepression; set { if (grassType != null) grassType.trailDepression = value; else _trailDepression = value; } }
 
         public bool enableColorNoise { get => grassType != null ? grassType.enableColorNoise : _enableColorNoise; set { if (grassType != null) grassType.enableColorNoise = value; else _enableColorNoise = value; } }
         public Color noiseTopColor { get => grassType != null ? grassType.noiseTopColor : _noiseTopColor; set { if (grassType != null) grassType.noiseTopColor = value; else _noiseTopColor = value; } }

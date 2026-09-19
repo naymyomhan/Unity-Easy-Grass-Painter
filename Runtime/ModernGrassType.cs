@@ -166,5 +166,31 @@ namespace ModernGrassTool
         public float segmentLODEndDist = 70f;
         [Range(1, 2)]
         public int minSegmentCount = 1;
+
+        [Header("Player & Object Interaction")]
+        [Tooltip("If enabled, characters, animals, and objects push and bend this grass species when moving through it.")]
+        public bool enableInteraction = false;
+        [Range(0.1f, 3.0f)]
+        [Tooltip("Multiplier for interactor push force.")]
+        public float interactionStrength = 1.0f;
+        [Range(0.0f, 1.0f)]
+        [Tooltip("Controls how flat to the ground blades are pressed when stepped on (0 = angled push, 1 = completely flattened).")]
+        public float interactionFlatten = 0.5f;
+        [Range(0.1f, 5.0f)]
+        [Tooltip("Speed at which grass springs back upright after interactor passes.")]
+        public float elasticRecoverySpeed = 1.5f;
+        [Range(0.0f, 1.0f)]
+        [Tooltip("Harmonic spring oscillation/wobble as blades rebound upright.")]
+        public float elasticOscillation = 0.3f;
+
+        [Header("Footprint / Walking Trail Persistence")]
+        [Tooltip("If enabled, grass along the player's movement path stays depressed as a lingering footprint trail.")]
+        public bool enableTrailPersistence = false;
+        [Range(0.2f, 5.0f)]
+        [Tooltip("Seconds the footprint depression lingers before recovering upright.")]
+        public float trailDuration = 1.5f;
+        [Range(0.1f, 1.0f)]
+        [Tooltip("Depression depth along the walking trail.")]
+        public float trailDepression = 0.7f;
     }
 }
