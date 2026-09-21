@@ -18,10 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ModernGrassFirePool.cs` zero-allocation pooling system tracking active flame wavefront directly from simulation.
   - Included particle prefab `GrassFire_VFX.prefab` with soft puff flame, smoke, and ember sparks.
   - Layer-level custom fire particle prefab support (`layer.fireParticlePrefab`).
-- **Comprehensive Documentation & Architectural Guides**:
-  - `GPU_GRASS_DEVELOPMENT_ROADMAP.md`: Complete 10-phase architectural guide from procedural buffers to wildfire CA.
-  - `README_API_GUIDE.md`: Dedicated external gameplay and combat API integration handbook.
-  - Expanded Starter Presets: `BOTW_LushGreen_Preset`, `Lawn_Grass`, `Lee_Grass`, `RedAutumnGrass`, `Small_Grass`, `TallWildGrass`, `Tsushima_Pampas_Grass`.
+- **Enhanced Documentation**:
+  - `INTEGRATION_GUIDE.md` updated with comprehensive gameplay hooks, combat interactions, and fire/scorch APIs.
 
 ## [1.1.0] - 2026-09-20
 

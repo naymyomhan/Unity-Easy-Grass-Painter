@@ -36,8 +36,7 @@ Easy Grass Painter includes high-performance gameplay components and C# static A
 - **💥 Explosions & Shockwaves**: Call `ModernGrassManager.TriggerShockwave(...)` or add `ModernGrassShockwave`.
 - **🌪️ Wind Blasts & Rotor Wash**: Add `ModernGrassWindZone` (Directional / 360° Omnidirectional) or call `ModernGrassManager.TriggerWindBurst(...)`.
 
-👉 **[Read the Full Scripting & Gameplay Integration Guide](INTEGRATION_GUIDE.md)** and **[External API Reference](README_API_GUIDE.md)** for copy-paste C# examples and API references.
-👉 **[Read the 10-Phase Architectural Roadmap](GPU_GRASS_DEVELOPMENT_ROADMAP.md)** to learn how the entire GPU system was built from scratch.
+👉 **[Read the Full Scripting & Gameplay Integration Guide](INTEGRATION_GUIDE.md)** for copy-paste C# examples and API references.
 
 ## 📄 License
 
