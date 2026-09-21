@@ -119,18 +119,55 @@ Shader "ModernGrassTool/FoliageMeshShader"
             float4 _WindZoneParams[8];
             float4 _WindZoneTimes[8];
 
+            // Grass Fire, Burn & Charred Simulation
+            sampler2D _GrassBurnMap;
+            float _EnableGrassBurnMap;
+            float _CanCatchFire;
+            float4 _CharredColor;
+            float3 _GrassBurnMapCenter;
+            float _GrassBurnMapSize;
+            float _GrassBurnMode;
+
             float3 ApplyFoliageDisplacement(float3 positionOS, float2 uv, float3 rootWS)
             {
                 float3 positionWS = TransformObjectToWorld(positionOS);
 
+                float scorch = 0.0;
+                if (_EnableGrassBurnMap > 0.5)
+                {
+                    if (_GrassBurnMode > 0.5)
+                    {
+                        float2 deltaFromPlayer = abs(rootWS.xz - _GrassBurnMapCenter.xz);
+                        float halfWindow = max(1.0, _GrassBurnMapSize) * 0.5;
+                        if (deltaFromPlayer.x < halfWindow && deltaFromPlayer.y < halfWindow)
+                        {
+                            float2 burnUV = frac(rootWS.xz / max(1.0, _GrassBurnMapSize));
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            float edgeDist = max(deltaFromPlayer.x, deltaFromPlayer.y);
+                            float edgeFade = saturate((halfWindow - edgeDist) / max(1.0, halfWindow * 0.12));
+                            scorch = burnData.r * edgeFade;
+                        }
+                    }
+                    else
+                    {
+                        float2 burnUV = (rootWS.xz - _GrassBurnMapCenter.xz) / max(1.0, _GrassBurnMapSize) + 0.5;
+                        if (burnUV.x >= 0.0 && burnUV.x <= 1.0 && burnUV.y >= 0.0 && burnUV.y <= 1.0)
+                        {
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            scorch = burnData.r;
+                        }
+                    }
+                }
+                float motionMult = (scorch > 0.1) ? 0.0 : 1.0;
+
                 // 1. Wind Sway (scaled by height above ground)
                 float height = max(0.0, positionOS.y);
-                float sway = sin(_Time.y * _WindSpeed + positionWS.x * 0.8 + positionWS.z * 0.8) * _WindSway * height;
+                float sway = sin(_Time.y * _WindSpeed + positionWS.x * 0.8 + positionWS.z * 0.8) * _WindSway * height * motionMult;
                 positionWS.x += sway;
                 positionWS.z += sway * 0.5;
 
                 // 2. Interactive Player Push & Spring Wobble
-                if (_EnableInteraction > 0.5)
+                if (_EnableInteraction > 0.5 && motionMult > 0.001)
                 {
                     float3 interactorPush = float3(0, 0, 0);
                     float minContactDist = 999.0;
@@ -284,7 +321,7 @@ Shader "ModernGrassTool/FoliageMeshShader"
                 }
 
                 // Dynamic Wind Zones & Blasts (Directional Cones & 360 Rotor Wash)
-                if (_WindZoneCount > 0)
+                if (_WindZoneCount > 0 && motionMult > 0.001)
                 {
                     float3 wzOffset = float3(0, 0, 0);
                     float hash = frac(sin(dot(rootWS.xz, float2(12.9898, 78.233))) * 43758.5453);
@@ -388,6 +425,13 @@ Shader "ModernGrassTool/FoliageMeshShader"
                         }
                     }
                     positionWS += wzOffset * saturate(uv.y);
+                }
+
+                // Burn / Charred Ash Uniform Scale
+                if (scorch > 0.01)
+                {
+                    float uniformScale = lerp(1.0, 0.2, scorch);
+                    positionWS = rootWS + (positionWS - rootWS) * uniformScale;
                 }
 
                 return positionWS;
@@ -498,6 +542,47 @@ Shader "ModernGrassTool/FoliageMeshShader"
                     }
                 #endif
 
+                // Grass Fire, Burn & Charred Color
+                if (_EnableGrassBurnMap > 0.5)
+                {
+                    float scorch = 0.0;
+                    float flame = 0.0;
+                    if (_GrassBurnMode > 0.5)
+                    {
+                        float2 deltaFromPlayer = abs(input.positionWS.xz - _GrassBurnMapCenter.xz);
+                        float halfWindow = max(1.0, _GrassBurnMapSize) * 0.5;
+                        if (deltaFromPlayer.x < halfWindow && deltaFromPlayer.y < halfWindow)
+                        {
+                            float2 burnUV = frac(input.positionWS.xz / max(1.0, _GrassBurnMapSize));
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            float edgeDist = max(deltaFromPlayer.x, deltaFromPlayer.y);
+                            float edgeFade = saturate((halfWindow - edgeDist) / max(1.0, halfWindow * 0.12));
+                            scorch = burnData.r * edgeFade;
+                            flame = burnData.g * edgeFade;
+                        }
+                    }
+                    else
+                    {
+                        float2 burnUV = (input.positionWS.xz - _GrassBurnMapCenter.xz) / max(1.0, _GrassBurnMapSize) + 0.5;
+                        if (burnUV.x >= 0.0 && burnUV.x <= 1.0 && burnUV.y >= 0.0 && burnUV.y <= 1.0)
+                        {
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            scorch = burnData.r;
+                            flame = burnData.g;
+                        }
+                    }
+
+                    if (scorch > 0.01)
+                    {
+                        finalRGB = lerp(finalRGB, _CharredColor.rgb, scorch);
+                    }
+                    if (flame > 0.01 && _CanCatchFire > 0.5)
+                    {
+                        float3 emberColor = float3(1.6, 0.35, 0.02) * flame;
+                        finalRGB += emberColor;
+                    }
+                }
+
                 finalRGB = MixFog(finalRGB, input.fogFactor);
 
                 return half4(finalRGB, baseCol.a);
@@ -572,17 +657,54 @@ Shader "ModernGrassTool/FoliageMeshShader"
             float4 _WindZoneParams[8];
             float4 _WindZoneTimes[8];
 
+            // Grass Fire, Burn & Charred Simulation
+            sampler2D _GrassBurnMap;
+            float _EnableGrassBurnMap;
+            float3 _GrassBurnMapCenter;
+            float _GrassBurnMapSize;
+            float _GrassBurnMode;
+            float3 _OrthographicCamPosTerrain;
+            float _OrthographicCamSizeTerrain;
+
             float3 ApplyFoliageDisplacementShadow(float3 positionOS, float2 uv, float3 rootWS)
             {
                 float3 positionWS = TransformObjectToWorld(positionOS);
 
+                float scorch = 0.0;
+                if (_EnableGrassBurnMap > 0.5)
+                {
+                    if (_GrassBurnMode > 0.5)
+                    {
+                        float2 deltaFromPlayer = abs(rootWS.xz - _GrassBurnMapCenter.xz);
+                        float halfWindow = max(1.0, _GrassBurnMapSize) * 0.5;
+                        if (deltaFromPlayer.x < halfWindow && deltaFromPlayer.y < halfWindow)
+                        {
+                            float2 burnUV = frac(rootWS.xz / max(1.0, _GrassBurnMapSize));
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            float edgeDist = max(deltaFromPlayer.x, deltaFromPlayer.y);
+                            float edgeFade = saturate((halfWindow - edgeDist) / max(1.0, halfWindow * 0.12));
+                            scorch = burnData.r * edgeFade;
+                        }
+                    }
+                    else
+                    {
+                        float2 burnUV = (rootWS.xz - _GrassBurnMapCenter.xz) / max(1.0, _GrassBurnMapSize) + 0.5;
+                        if (burnUV.x >= 0.0 && burnUV.x <= 1.0 && burnUV.y >= 0.0 && burnUV.y <= 1.0)
+                        {
+                            float4 burnData = tex2Dlod(_GrassBurnMap, float4(burnUV, 0, 0));
+                            scorch = burnData.r;
+                        }
+                    }
+                }
+                float motionMult = (scorch > 0.1) ? 0.0 : 1.0;
+
                 float height = max(0.0, positionOS.y);
-                float sway = sin(_Time.y * _WindSpeed + positionWS.x * 0.8 + positionWS.z * 0.8) * _WindSway * height;
+                float sway = sin(_Time.y * _WindSpeed + positionWS.x * 0.8 + positionWS.z * 0.8) * _WindSway * height * motionMult;
                 positionWS.x += sway;
                 positionWS.z += sway * 0.5;
 
                 // 2. Interactive Player Push & Spring Wobble
-                if (_EnableInteraction > 0.5)
+                if (_EnableInteraction > 0.5 && motionMult > 0.001)
                 {
                     float3 interactorPush = float3(0, 0, 0);
                     float minContactDist = 999.0;
@@ -735,7 +857,7 @@ Shader "ModernGrassTool/FoliageMeshShader"
                 }
 
                 // Dynamic Wind Zones & Blasts (Directional Cones & 360 Rotor Wash)
-                if (_WindZoneCount > 0)
+                if (_WindZoneCount > 0 && motionMult > 0.001)
                 {
                     float3 wzOffset = float3(0, 0, 0);
                     float hash = frac(sin(dot(rootWS.xz, float2(12.9898, 78.233))) * 43758.5453);
@@ -839,6 +961,13 @@ Shader "ModernGrassTool/FoliageMeshShader"
                         }
                     }
                     positionWS += wzOffset * saturate(uv.y);
+                }
+
+                // Burn / Charred Ash Uniform Scale
+                if (scorch > 0.01)
+                {
+                    float uniformScale = lerp(1.0, 0.2, scorch);
+                    positionWS = rootWS + (positionWS - rootWS) * uniformScale;
                 }
 
                 return positionWS;

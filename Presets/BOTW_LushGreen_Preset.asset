@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e64255085c8d64245b1ce4355c04b1fa, type: 3}
+  m_Name: BOTW_LushGreen_Preset
+  m_EditorClassIdentifier: 
+  topColor: {r: 0.17736654, g: 0.6320754, b: 0.09242612, a: 1}
+  bottomColor: {r: 0.12, g: 0.35, b: 0.08, a: 1}
+  bladesPerClump: 4
+  clumpRadius: 0.0667
+  clumpTilt: 0.09
+  defaultWidth: 0.1183
+  defaultHeight: 0.897
+  bottomWidth: 0.022
+  bottomWidthVariation: 0.369
+  widthVariation: 0.491
+  heightVariation: 0.488
+  bladeForward: 0.25
+  bladeCurve: 4
+  normalLimit: 0.2
+  normalUpBlend: 0
+  translucency: 0
+  edgeHighlight: 0
+  windStrength: 0.086
+  windSpeed: 3.296
+  windScale: 1.255
+  enableGroundBlend: 1
+  groundBlendFade: 0
+  groundBlendStretch: 2.5
+  ambientAdjustmentColor: {r: 1, g: 1, b: 1, a: 1}
+  minFadeDistance: 40
+  maxDrawDistance: 120

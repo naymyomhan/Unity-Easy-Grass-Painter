@@ -34,32 +34,35 @@ namespace ModernGrassTool.Editor
             DrawPropertiesExcluding(serializedObject, "layers", "m_Script");
             serializedObject.ApplyModifiedProperties();
 
-            EditorGUILayout.Space(20);
-        }
+            ModernGrassManager mgr = (ModernGrassManager)target;
+            if (mgr != null && mgr.enableFireSimulation)
+            {
+                EditorGUILayout.Space(6);
+                Color origBg = GUI.backgroundColor;
+                GUI.backgroundColor = new Color(1.0f, 0.65f, 0.3f);
+                if (GUILayout.Button("🔥 Clear Burn Map", GUILayout.Height(28)))
+                {
+                    mgr.ClearAllBurnInternal();
+                }
+                GUI.backgroundColor = origBg;
+            }
 
-        public static string GetOrCreatePresetsFolder()
-        {
-            if (AssetDatabase.IsValidFolder("Assets/EasyGrassPresets"))
-            {
-                return "Assets/EasyGrassPresets";
-            }
-            if (AssetDatabase.IsValidFolder("Assets/ModernGrassPresets"))
-            {
-                return "Assets/ModernGrassPresets";
-            }
-            if (AssetDatabase.IsValidFolder("Assets/ModernGrassTool/Presets"))
-            {
-                return "Assets/ModernGrassTool/Presets";
-            }
-            AssetDatabase.CreateFolder("Assets", "EasyGrassPresets");
-            return "Assets/EasyGrassPresets";
+            EditorGUILayout.Space(20);
         }
 
         public static ModernGrassType CreateAndAssignTypeAsset(GrassLayer layer)
         {
-            string folder = GetOrCreatePresetsFolder();
+            if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool/Presets"))
+            {
+                if (!AssetDatabase.IsValidFolder("Assets/ModernGrassTool"))
+                {
+                    AssetDatabase.CreateFolder("Assets", "ModernGrassTool");
+                }
+                AssetDatabase.CreateFolder("Assets/ModernGrassTool", "Presets");
+            }
+
             string safeName = string.IsNullOrEmpty(layer.layerName) ? "LawnGrass" : layer.layerName.Replace(" ", "_");
-            string path = $"{folder}/{safeName}.asset";
+            string path = $"Assets/ModernGrassTool/Presets/{safeName}.asset";
             path = AssetDatabase.GenerateUniqueAssetPath(path);
 
             ModernGrassType gt = ScriptableObject.CreateInstance<ModernGrassType>();
@@ -91,6 +94,14 @@ namespace ModernGrassTool.Editor
             gt.bladeShadowStrength = layer.bladeShadowStrength;
             gt.canBeCut = layer.canBeCut;
             gt.cutParticlePrefab = layer.cutParticlePrefab;
+            gt.canCatchFire = layer.canCatchFire;
+            gt.burnDuration = layer.burnDuration;
+            gt.fireSpreadRadius = layer.fireSpreadRadius;
+            gt.fireSpreadSpeed = layer.fireSpreadSpeed;
+            gt.fireMaxSpreadGap = layer.fireMaxSpreadGap;
+            gt.charredColor = layer.charredColor;
+            gt.fireParticlePrefab = layer.fireParticlePrefab;
+            gt.fireParticleDensity = layer.fireParticleDensity;
             gt.windStrength = layer.windStrength;
             gt.windSpeed = layer.windSpeed;
             gt.windScale = layer.windScale;

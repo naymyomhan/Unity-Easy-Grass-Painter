@@ -1,0 +1,410 @@
+#pragma kernel IgniteStamp
+#pragma kernel ScorchStamp
+#pragma kernel Simulate
+#pragma kernel BakeFuel
+#pragma kernel ClearMap
+#pragma kernel ClearStamp
+#pragma kernel BakeGrassPointsFuel
+
+// 2D Grass Burn, Fire Propagation & Scorch Simulation
+// R = Scorch / Charred Ash Progress (0.0 = Healthy, 1.0 = Charred Black Ash)
+// G = Active Fire Flame Ember (0.0 = Extinguished, 1.0 = Glowing Burning Flame)
+// B = Grass Fuel Mask (0.0 = No Flammable Grass, 1.0 = Flammable Grass Present)
+// A = Temperature / Heat Accumulator
+
+RWTexture2D<float4> _BurnMapRW;
+Texture2D<float4> _BurnMapRead;
+
+float2 _StampPos;          // UV coordinates (0 to 1)
+float  _StampRadius;       // UV radius
+float  _StampIntensity;    // 0 to 1 intensity
+float  _DeltaTime;
+float  _BurnDuration;      // seconds to burn down
+float  _SpreadSpeed;       // propagation speed multiplier
+float  _WindVector2D;     // unused pad
+float2 _WindVector;        // 2D wind push on flame
+float  _TextureSize;
+float  _FadeRate;          // Scorch fade / regrowth rate per second
+float  _ReignitionThreshold; // Scorch threshold (0.2 to 1.0) below which regrown grass can catch fire again
+int    _IgnitionSourceCount;
+float4 _IgnitionSources[16]; // xy = UV coords, z = maxSpreadRadius in UV space, w = active (1.0 = active)
+
+// Point-accurate GPU Fuel Mask Baking
+struct GrassSourcePoint
+{
+    float3 position;
+    float3 normal;
+    float2 size;
+    float4 color;
+};
+
+StructuredBuffer<GrassSourcePoint> _GrassPoints;
+uint   _GrassPointCount;
+float  _GrassClumpRadius;
+float  _FireMaxSpreadGap;
+float  _BurnMapWorldSize;
+float3 _BurnMapCenter;
+float  _BurnMapMode; // 0 = FixedWorld, 1 = PlayerCenteredFloating
+
+float2 ToroidalDelta(float2 a, float2 b)
+{
+    float2 d = a - b;
+    if (d.x > 0.5) d.x -= 1.0;
+    else if (d.x < -0.5) d.x += 1.0;
+    if (d.y > 0.5) d.y -= 1.0;
+    else if (d.y < -0.5) d.y += 1.0;
+    return d;
+}
+
+float ToroidalDistance(float2 a, float2 b)
+{
+    return length(ToroidalDelta(a, b));
+}
+
+[numthreads(16, 16, 1)]
+void IgniteStamp(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / _TextureSize;
+    float dist = ToroidalDistance(uv, _StampPos);
+    float4 cur = _BurnMapRead[id.xy];
+
+    if (dist <= _StampRadius)
+    {
+        // CAN ONLY IGNITE if healthy or regrown enough (scorch < _ReignitionThreshold and fuel > 0.5)!
+        float thresh = (_ReignitionThreshold > 0.05) ? _ReignitionThreshold : 0.4;
+        if (cur.r < thresh && cur.b > 0.5)
+        {
+            float falloff = smoothstep(_StampRadius, _StampRadius * 0.2, dist);
+            float newFlame = max(cur.g, falloff * _StampIntensity);
+            _BurnMapRW[id.xy] = float4(cur.r, newFlame, cur.b, 1.0);
+        }
+        else
+        {
+            _BurnMapRW[id.xy] = cur;
+        }
+    }
+    else
+    {
+        _BurnMapRW[id.xy] = cur;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void ScorchStamp(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / _TextureSize;
+    float dist = ToroidalDistance(uv, _StampPos);
+    float4 cur = _BurnMapRead[id.xy];
+
+    if (dist <= _StampRadius)
+    {
+        float falloff = smoothstep(_StampRadius, _StampRadius * 0.2, dist);
+        float newScorch = max(cur.r, falloff * _StampIntensity);
+        // Scorch consumes fuel - charred grass cannot be burned as fresh fuel
+        float newFuel = min(cur.b, saturate(1.0 - newScorch * 1.2));
+        _BurnMapRW[id.xy] = float4(saturate(newScorch), cur.g, newFuel, cur.a);
+    }
+    else
+    {
+        _BurnMapRW[id.xy] = cur;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void Simulate(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+
+    float4 current = _BurnMapRead[id.xy];
+    float scorch = current.r;
+    float flame = current.g;
+    float fuel = current.b;
+    float heat = current.a;
+
+    // 1. If currently burning: consume fuel and convert to charred black ash
+    if (flame > 0.01)
+    {
+        float burnRate = _DeltaTime / max(0.2, _BurnDuration);
+        scorch += burnRate;
+        fuel = max(0.0, fuel - burnRate * 1.5); // Fuel is permanently consumed by fire!
+
+        if (scorch >= 1.0)
+        {
+            scorch = 1.0;
+            flame = 0.0;    // Fire burned out, ash remains
+            fuel = 0.0;     // No fuel left!
+            heat = 0.0;
+        }
+        else
+        {
+            // Natural fire flicker & ember decay
+            flame = saturate(1.0 - (scorch * 0.4));
+        }
+    }
+    // 2. Can only catch fire if FRESH UNBURNT grass (fuel present and scorch below threshold)
+    else if (fuel > 0.5 && scorch < ((_ReignitionThreshold > 0.05) ? _ReignitionThreshold : 0.4))
+    {
+        uint texMask = (uint)_TextureSize - 1;
+
+        // 8-neighbor isotropic circular kernel (Euclidean distance weighted)
+        // Eliminates diamond/square grid artifacts!
+        // Orthogonal distance = 1.0 (weight = 1.0)
+        // Diagonal distance = sqrt(2) ~ 1.4142 (weight = 1.0 / 1.4142 ~ 0.7071)
+        int2 offsets[8] = {
+            int2( 1,  0), int2(-1,  0), int2( 0,  1), int2( 0, -1), // Orthogonal
+            int2( 1,  1), int2(-1,  1), int2( 1, -1), int2(-1, -1)  // Diagonal
+        };
+        float weights[8] = {
+            1.0, 1.0, 1.0, 1.0,
+            0.7071, 0.7071, 0.7071, 0.7071
+        };
+
+        float neighborFlameMax = 0.0;
+        float neighborFlameSum = 0.0;
+        int activeBurningNeighbors = 0;
+
+        [unroll]
+        for (int i = 0; i < 8; i++)
+        {
+            uint2 c = (uint2)((int2)id.xy + offsets[i]) & texMask;
+            float4 n = _BurnMapRead[c];
+            float weightedFlame = n.g * weights[i];
+            neighborFlameMax = max(neighborFlameMax, weightedFlame);
+            if (n.g > 0.05)
+            {
+                neighborFlameSum += weightedFlame;
+            }
+            if (n.g > 0.15)
+            {
+                activeBurningNeighbors++;
+            }
+        }
+
+        // Wind directional bias: sample upstream neighbor with toroidal wrapping
+        if (length(_WindVector) > 0.01)
+        {
+            float2 windDir = normalize(_WindVector);
+            float2 windStep = -windDir * 1.5;
+            int2 windCoord = (int2)id.xy + int2(round(windStep.x), round(windStep.y));
+            uint2 cWind = (uint2)windCoord & texMask;
+            float windFlame = _BurnMapRead[cWind].g;
+            neighborFlameMax = max(neighborFlameMax, windFlame * 1.4);
+            neighborFlameSum += windFlame * 0.5;
+        }
+
+        // Combine max flame with multi-neighbor accumulation
+        float effectiveFlame = max(neighborFlameMax, neighborFlameSum * 0.35);
+
+        // Organic edge jitter (breaks up polygon / grid patterns at the outer boundary)
+        float hash = frac(sin(dot((float2)id.xy, float2(12.9898, 78.233))) * 43758.5453);
+        float jitter = 0.9 + 0.2 * hash;
+
+        float2 uv = (float2(id.xy) + 0.5) / _TextureSize;
+
+        // Check if within any active ignition source's organic spread boundary and retrieve its local spread speed
+        bool inSpreadZone = false;
+        float currentSpreadSpeed = 0.0;
+        if (_IgnitionSourceCount <= 0)
+        {
+            inSpreadZone = false;
+        }
+        else
+        {
+            [loop]
+            for (int k = 0; k < _IgnitionSourceCount; k++)
+            {
+                if (_IgnitionSources[k].w > 0.01)
+                {
+                    float2 delta = ToroidalDelta(uv, _IgnitionSources[k].xy);
+                    float dist = length(delta);
+
+                    float angle = atan2(delta.y, delta.x);
+                    float seed = _IgnitionSources[k].x * 123.456 + _IgnitionSources[k].y * 789.012;
+
+                    // Asymmetric multi-harmonic lobes (breaks circular symmetry into organic wildfire fingers)
+                    float a1 = sin(angle * 2.0 + seed * 1.0) * 0.22;
+                    float a2 = cos(angle * 3.0 - seed * 1.7) * 0.16;
+                    float a3 = sin(angle * 5.0 + seed * 2.3) * 0.10;
+                    float a4 = cos(angle * 7.0 - seed * 0.9) * 0.06;
+                    float shapeFactor = 1.0 + a1 + a2 + a3 + a4;
+
+                    // Wind directional stretch (stretches downwind, contracts upwind)
+                    float2 dir = (dist > 0.0001) ? (delta / dist) : float2(0.0, 0.0);
+                    float windAlignment = dot(dir, _WindVector);
+                    float windStretch = 1.0 + windAlignment * 0.35;
+
+                    // High-frequency ragged boundary noise (ash perimeter roughness)
+                    float edgeNoise = (frac(sin(dot(floor(uv * _TextureSize * 0.25), float2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.12;
+
+                    float localSpeedMult = max(0.2, shapeFactor) * windStretch;
+                    float organicMaxReach = _IgnitionSources[k].z * max(0.2, (shapeFactor + edgeNoise)) * windStretch;
+
+                    if (dist <= organicMaxReach)
+                    {
+                        inSpreadZone = true;
+                        currentSpreadSpeed = max(currentSpreadSpeed, _IgnitionSources[k].w * localSpeedMult);
+                    }
+                }
+            }
+        }
+
+        // Subtle organic speed jitter (average 1.0)
+        float speedJitter = 0.95 + 0.10 * frac(sin(dot(floor(uv * _TextureSize * 0.15), float2(37.11, 89.63))) * 28461.381);
+        float activeSpeed = ((currentSpreadSpeed > 0.001) ? currentSpreadSpeed : _SpreadSpeed) * speedJitter;
+
+        // Controlled outward wavefront propagation: strictly calibrated to exact physical meters per second!
+        // Strictly requires ACTIVE neighbor flame (effectiveFlame > 0.08) so cold dead ash (n.g == 0) CANNOT re-ignite!
+        if (inSpreadZone && effectiveFlame > 0.08)
+        {
+            float texelSize = max(0.01, _BurnMapWorldSize / max(1.0, _TextureSize));
+            float metricRate = activeSpeed / texelSize;
+            heat += effectiveFlame * (0.5 * metricRate) * _DeltaTime * jitter;
+            if (heat >= 0.5)
+            {
+                flame = 1.0; // Ignite this fresh grass patch!
+                heat = 1.0;
+            }
+        }
+        else
+        {
+            heat = max(0.0, heat - _DeltaTime * 2.0); // Heat dissipates outside max spread limit or without active flame!
+        }
+    }
+    else
+    {
+        // Already burned ash or no fuel: dissipate any incoming heat so it NEVER re-ignites!
+        heat = max(0.0, heat - _DeltaTime * 2.0);
+    }
+
+    // 3. When fire has burned out, scorched ground heals over time (allowing new grass to regrow)
+    if (flame <= 0.01 && scorch > 0.0)
+    {
+        if (_FadeRate > 0.0)
+        {
+            scorch = max(0.0, scorch - _FadeRate * _DeltaTime);
+        }
+
+        // Only when scorch fades below threshold has the grass regrown enough to restore fuel
+        float thresh = (_ReignitionThreshold > 0.05) ? _ReignitionThreshold : 0.4;
+        if (scorch <= 0.01)
+        {
+            scorch = 0.0;
+            fuel = 1.0; // Fully regrown green grass!
+        }
+        else if (scorch <= thresh)
+        {
+            fuel = 1.0; // Regrown enough to be flammable again!
+        }
+        else
+        {
+            fuel = 0.0; // Still scorched ash / recovering, CANNOT catch fire!
+        }
+    }
+
+    _BurnMapRW[id.xy] = float4(saturate(scorch), saturate(flame), saturate(fuel), saturate(heat));
+}
+
+[numthreads(16, 16, 1)]
+void BakeFuel(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / _TextureSize;
+    float dist = ToroidalDistance(uv, _StampPos);
+    float4 cur = _BurnMapRead[id.xy];
+
+    if (dist <= _StampRadius)
+    {
+        _BurnMapRW[id.xy] = float4(cur.r, cur.g, 1.0, cur.a);
+    }
+    else
+    {
+        _BurnMapRW[id.xy] = cur;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void ClearMap(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+    // R=0 (healthy), G=0 (no flame), B=0 (no fuel on bare ground by default), A=0 (cool)
+    _BurnMapRW[id.xy] = float4(0, 0, 0, 0);
+}
+
+[numthreads(16, 16, 1)]
+void ClearStamp(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_TextureSize || id.y >= (uint)_TextureSize) return;
+
+    float2 uv = (float2(id.xy) + 0.5) / _TextureSize;
+    float dist = ToroidalDistance(uv, _StampPos);
+    float4 cur = _BurnMapRead[id.xy];
+
+    if (dist <= _StampRadius)
+    {
+        float falloff = smoothstep(_StampRadius, _StampRadius * 0.4, dist);
+        // Clear scorch (R), flame (G), and heat (A)
+        float newScorch = max(0.0, cur.r * (1.0 - falloff));
+        float newFlame = max(0.0, cur.g * (1.0 - falloff));
+        float newHeat = max(0.0, cur.a * (1.0 - falloff));
+        float thresh = (_ReignitionThreshold > 0.05) ? _ReignitionThreshold : 0.4;
+        float newFuel = (newScorch <= thresh && (cur.b > 0.01 || cur.r > 0.01)) ? 1.0 : cur.b;
+        _BurnMapRW[id.xy] = float4(newScorch, newFlame, newFuel, newHeat);
+    }
+    else
+    {
+        _BurnMapRW[id.xy] = cur;
+    }
+}
+
+[numthreads(64, 1, 1)]
+void BakeGrassPointsFuel(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _GrassPointCount) return;
+
+    float3 pos = _GrassPoints[id.x].position;
+    float mapSize = max(1.0, _BurnMapWorldSize);
+    int texSizeInt = (int)_TextureSize;
+
+    float2 uv;
+    if (_BurnMapMode > 0.5) // PlayerCenteredFloating
+    {
+        uv = frac(pos.xz / mapSize);
+    }
+    else // FixedWorldBounds
+    {
+        uv = (pos.xz - _BurnMapCenter.xz) / mapSize + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return;
+    }
+
+    int texSize = max(1, (int)_TextureSize);
+    int2 centerCoord = int2(floor(uv * _TextureSize));
+    centerCoord = (centerCoord % texSize + texSize) % texSize;
+
+    // Fuel stamp radius in texels (ensure solid overlap across clumps)
+    float clumpRad = max(0.25, _GrassClumpRadius);
+    float spreadGap = max(0.35, _FireMaxSpreadGap);
+    float fuelWorldRadius = clumpRad + spreadGap * 0.75;
+    float pixelRadius = max(1.5, (fuelWorldRadius / mapSize) * _TextureSize);
+    int r = (int)ceil(pixelRadius);
+    r = clamp(r, 1, 10); // Safety clamp
+
+    for (int dy = -r; dy <= r; dy++)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        {
+            if (float(dx * dx + dy * dy) <= (pixelRadius * pixelRadius + 0.25))
+            {
+                int2 rawCoord = centerCoord + int2(dx, dy);
+                uint2 coord = (uint2)((rawCoord % texSize + texSize) % texSize);
+
+                // Stamp fuel = 1.0
+                _BurnMapRW[coord] = float4(0.0, 0.0, 1.0, 0.0);
+            }
+        }
+    }
+}

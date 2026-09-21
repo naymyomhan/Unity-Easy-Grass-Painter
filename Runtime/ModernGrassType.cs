@@ -122,6 +122,29 @@ namespace ModernGrassTool
         [Tooltip("Custom Particle System prefab spawned when this grass type is cut. If null, a procedural shred particle is used.")]
         public ParticleSystem cutParticlePrefab;
 
+        [Header("Fire, Burning & Charring")]
+        [Tooltip("If enabled, this grass species can catch fire, burn down, and spread fire to nearby grass.")]
+        public bool canCatchFire = true;
+        [Tooltip("Duration in seconds for blades to burn before turning into charred ash stubble.")]
+        [Range(0.5f, 10f)]
+        public float burnDuration = 2.5f;
+        [Tooltip("Maximum distance in meters fire can propagate outward from the ignition source before extinguishing.")]
+        [Range(0.5f, 25f)]
+        public float fireSpreadRadius = 3.5f;
+        [Tooltip("Propagation speed multiplier at which fire spreads to neighboring grass (0.2 = slow creeping, 3.0 = fast wildfire).")]
+        [Range(0.1f, 5f)]
+        public float fireSpreadSpeed = 1.0f;
+        [Tooltip("Maximum gap distance between grass blades. If the gap to the next grass blade exceeds this distance, fire stops spreading.")]
+        [Range(0.2f, 5f)]
+        public float fireMaxSpreadGap = 0.8f;
+        [Tooltip("Color of charred scorched grass after burning or being hit by explosions.")]
+        public Color charredColor = new Color(0.08f, 0.08f, 0.08f, 1f);
+        [Tooltip("Optional custom Particle System prefab spawned when this grass species catches fire. If null, no fire particles are spawned.")]
+        public ParticleSystem fireParticlePrefab;
+        [Tooltip("Multiplier for fire particle emission density (0.1 to 5.0). Higher values produce denser, thicker flames.")]
+        [Range(0.1f, 5.0f)]
+        public float fireParticleDensity = 1.0f;
+
         [Header("Shading and Lighting")]
         [Range(0f, 1f)]
         public float normalUpBlend = 0.75f;

@@ -111,6 +111,22 @@ float4 _WindZoneVectors[8]; // xyz = forward dir, w = cos(coneAngle * 0.5)
 float4 _WindZoneParams[8];  // x = radius/range, y = force, z = flutterSpeed, w = verticalRange
 float4 _WindZoneTimes[8];   // x = recoilStartTime (-1 if active), y = recoilDuration (1.6s)
 
+// Fire, Burning & Charring Simulation
+Texture2D<float4> _GrassBurnMap;
+SamplerState sampler_LinearClamp;
+float4 _GrassBurnSettings;   // x = enableBurn, y = canCatchFire
+float4 _CharredColor;        // rgba
+float4 _GrassBurnMapParams;  // xyz = center, w = worldSize
+float _EnableGrassBurnMap;
+float _CanCatchFire;
+float3 _GrassBurnMapCenter;
+float  _GrassBurnMapSize;
+float3 _OrthographicCamPosTerrain;
+float _OrthographicCamSizeTerrain;
+
+// Cutting & GPU Regrowth Settings
+float4 _GrassCutSettings; // x = regrowDelay, y = regrowAnimDuration, z = stubbleHeight, w = regrowMode
+
 // -------------------------------------------------------------------------
 // Simplex 2D Noise Implementation (Stefan Gustavson / Ian McEwan)
 // -------------------------------------------------------------------------
@@ -216,11 +232,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     uint activeBlades = max(1, (uint)ceil(_BladesPerClump * distFade));
     if (bladeInClump >= activeBlades) return;
 
-    // 4. Cutting data (MinionsArt style: -1 = uncut -> 99999.0 sentinel)
+    // 4. Cutting data (MinionsArt style: -1 = uncut)
     float cut = _CutBuffer[pointIdx];
-    float effectiveCut = (cut < -0.5) ? 99999.0 : cut;
-    bool isStubble = (cut > -0.5 && cut < (rootPos.y + 0.45));
-    float motionMult = isStubble ? 0.0 : 1.0;
+    float effectiveCut = 99999.0;
 
     // Hash based on root position
     float hash = frac(sin(dot(rootPos.xz, float2(12.9898, 78.233))) * 43758.5453);
@@ -305,6 +319,104 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float hWaveMult = lerp(1.0 - _HeightWaveIntensity * 0.4, 1.0 + _HeightWaveIntensity * 0.25, hWave01);
         bladeHeight *= max(0.1, hWaveMult);
     }
+
+    // --- 6B. Burn & Scorch Simulation: Charred Ash Stubble & Color ---
+    float scorch = 0.0;
+    float flame = 0.0;
+    float burnEnabled = max(_EnableGrassBurnMap, _GrassBurnSettings.x);
+    if (burnEnabled > 0.5)
+    {
+        float3 mapCenter = (_GrassBurnMapParams.w > 0.01) ? _GrassBurnMapParams.xyz : _GrassBurnMapCenter;
+        float mapSize = (_GrassBurnMapParams.w > 0.01) ? _GrassBurnMapParams.w : _GrassBurnMapSize;
+        bool isFloatingWindow = (_GrassBurnSettings.z > 0.5);
+
+        if (isFloatingWindow)
+        {
+            // Toroidal Modulo Ring Buffer: Texture coordinates are permanently world-locked via frac(rootPos.xz / mapSize)
+            // Burn marks can NEVER slide with the player!
+            float2 deltaFromPlayer = abs(rootPos.xz - mapCenter.xz);
+            float halfWindow = max(1.0, mapSize) * 0.5;
+
+            if (deltaFromPlayer.x < halfWindow && deltaFromPlayer.y < halfWindow)
+            {
+                // Modulo wrap into [0, 1] range:
+                float2 burnUV = frac(rootPos.xz / max(1.0, mapSize));
+                float4 burnData = _GrassBurnMap.SampleLevel(sampler_LinearClamp, burnUV, 0);
+
+                // Smooth edge fade near window boundary so marks don't pop abruptly
+                float edgeDist = max(deltaFromPlayer.x, deltaFromPlayer.y);
+                float edgeFade = saturate((halfWindow - edgeDist) / max(1.0, halfWindow * 0.12));
+
+                scorch = burnData.r * edgeFade;
+                flame = burnData.g * edgeFade;
+            }
+        }
+        else
+        {
+            // Fixed World Bounds Mode (Static Arena/Dungeon Bounds)
+            float2 burnUV = (rootPos.xz - mapCenter.xz) / max(1.0, mapSize) + 0.5;
+            if (burnUV.x >= 0.0 && burnUV.x <= 1.0 && burnUV.y >= 0.0 && burnUV.y <= 1.0)
+            {
+                float4 burnData = _GrassBurnMap.SampleLevel(sampler_LinearClamp, burnUV, 0);
+                scorch = burnData.r; // 0 = healthy, 1 = charred black ash
+                flame = burnData.g;  // active flame ember
+            }
+        }
+    }
+
+    // 6C. Grass Cutting & 100% GPU-Driven Smooth Regrowth Animation
+    float defaultStubble = (_GrassCutSettings.z > 0.001) ? _GrassCutSettings.z : 0.18;
+    if (cut > 0.0)
+    {
+        float regrowMode = _GrassCutSettings.w;
+
+        // regrowMode: 0 = None, 1 = Timer, 2 = Distance, 3 = ManualOnly
+        if (abs(regrowMode - 1.0) < 0.1) // Timer Mode: 100% GPU Regrowth
+        {
+            float elapsed = _Time - cut;
+            float totalDelay = _GrassCutSettings.x;
+            float animDuration = min(totalDelay, (_GrassCutSettings.y > 0.01) ? _GrassCutSettings.y : 2.5);
+            float holdDelay = max(0.0, totalDelay - animDuration);
+
+            if (elapsed < totalDelay)
+            {
+                float growthT = saturate((elapsed - holdDelay) / max(0.01, animDuration));
+                if (growthT >= 0.999)
+                {
+                    effectiveCut = 99999.0;
+                }
+                else
+                {
+                    float growthFactor = smoothstep(0.0, 1.0, growthT);
+                    effectiveCut = rootPos.y + lerp(defaultStubble, bladeHeight * 1.05, growthFactor);
+                }
+            }
+            else
+            {
+                effectiveCut = 99999.0;
+            }
+        }
+        else // None, Distance, Manual: remains cut at stubble until cleared by CPU
+        {
+            effectiveCut = rootPos.y + defaultStubble;
+        }
+    }
+
+    // When burned / scorched:
+    // 1. Core combustion zone (scorch >= 0.40): Cleanly clip top of blade down to short ash stubble (0.14m)
+    // 2. Perimeter heat-singe zone (scorch < 0.40): Retain full blade height so standing grass around the edge
+    //    displays heat-singed charred tips and scorched gradients!
+    if (scorch > 0.40)
+    {
+        float targetAshStubble = min(defaultStubble, 0.14);
+        float burnShrink = smoothstep(0.40, 0.75, scorch);
+        float ashStubbleHeight = rootPos.y + lerp(bladeHeight, targetAshStubble, burnShrink);
+        effectiveCut = min(effectiveCut, ashStubbleHeight);
+    }
+
+    // Smooth wind suppression while at or near stubble height
+    float stubbleFade = saturate((effectiveCut - (rootPos.y + defaultStubble)) / max(0.05, bladeHeight * 0.4));
+    float motionMult = (effectiveCut > 90000.0) ? 1.0 : stubbleFade;
 
     // --- 7. OPTIMIZED NOISE: Sample Color Noise ONCE per blade ---
     float colorNoiseContrasted = 0.0;
@@ -675,7 +787,42 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // Color interpolation with pre-sampled noise
         float4 baseC = lerp(_BottomColor, _TopColor, saturate(t));
         float4 noiseC = lerp(_NoiseBottomColor, _NoiseTopColor, saturate(t));
-        spineCol[p] = lerp(baseC, noiseC, colorNoiseContrasted);
+        float4 finalCol = lerp(baseC, noiseC, colorNoiseContrasted);
+
+        // Charred black ash coloring & perimeter heat-singe gradient
+        if (scorch > 0.01)
+        {
+            // Core combustion ash (scorch >= 0.40): whole stubble body is deep charred charcoal
+            // Perimeter singe (scorch < 0.40): heat singes the upper blade and tips first, leaving root fresh
+            float tipSingeBias = pow(saturate(t), 1.2); // stronger towards blade tip
+            float singeFactor = (scorch >= 0.40) 
+                ? saturate((scorch - 0.40) / 0.35 * 0.4 + 0.6) 
+                : (saturate(scorch / 0.40) * (0.12 + 0.88 * tipSingeBias));
+            
+            // In the perimeter singe zone, add subtle warm toasted/scorched tint before fully charring black
+            float3 singedCharColor = lerp(_CharredColor.rgb * float3(1.3, 1.1, 0.8), _CharredColor.rgb, saturate(scorch / 0.35));
+            finalCol.rgb = lerp(finalCol.rgb, singedCharColor, saturate(singeFactor));
+        }
+
+        // Fiery glowing ember on burning grass blades
+        float canCatch = max(_CanCatchFire, _GrassBurnSettings.y);
+        float emberWeight = 0.0;
+        if (flame > 0.01 && canCatch > 0.5)
+        {
+            // Organic flame frontier: strongest on active wavefront, rapidly decaying into charred ash behind
+            float flameFrontier = saturate(flame * 1.2) * saturate(1.0 - scorch * 1.5);
+            // Per-blade spatial crackle variation (intermixing glowing blades with dark charred blades)
+            float bladeCrackle = lerp(0.65, 1.25, hash);
+            emberWeight = flameFrontier * bladeCrackle * saturate(t * 1.2);
+
+            // Heavily char the blade body underneath burning flame (mixing with black charcoal)
+            float charUnderFlame = saturate(emberWeight * 0.9 + 0.35);
+            finalCol.rgb = lerp(finalCol.rgb, _CharredColor.rgb, charUnderFlame);
+        }
+        // Pack ember intensity into alpha for fragment shader additive HDR glow
+        finalCol.a = emberWeight;
+
+        spineCol[p] = finalCol;
     }
 
     // --- 11. DYNAMIC SEGMENTS QUAD ASSEMBLY ---

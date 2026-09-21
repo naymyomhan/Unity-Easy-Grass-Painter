@@ -13,6 +13,20 @@ namespace ModernGrassTool
         ManualOnly     // Only regrows when game code calls RegrowAll() or RegrowAt()
     }
 
+    public enum GrassBurnFadeMode
+    {
+        None,          // Scorch stays permanently charred
+        Timer,         // Auto-fades scorch over time after Burn Fade Seconds
+        Distance,      // Auto-clears scorch when player/camera moves beyond Burn Fade Distance
+        ManualOnly     // Only clears when game code calls ClearAllBurn() or ClearBurnAt()
+    }
+
+    public enum GrassBurnMapMode
+    {
+        FixedWorldBounds,       // Fixed bounds over local area (Arena, Dungeon, Test Scene)
+        PlayerCenteredFloating  // Toroidal modulo ring buffer following player (10km+ Open World)
+    }
+
     [ExecuteAlways]
     [AddComponentMenu("Modern Grass/Modern Grass Manager")]
     public class ModernGrassManager : MonoBehaviour
@@ -37,6 +51,8 @@ namespace ModernGrassTool
         public GrassRegrowthMode regrowthMode = GrassRegrowthMode.Timer;
         [Tooltip("Seconds after cutting before grass regrows (used in Timer mode).")]
         public float regrowDelaySeconds = 8.0f;
+        [Tooltip("Duration in seconds of the smooth upward growth animation when regrowing (used in Timer mode).")]
+        public float regrowAnimationDuration = 2.5f;
         [Tooltip("Distance from player/camera before cut grass regrows (used in Distance mode).")]
         public float regrowDistance = 45.0f;
         [Tooltip("Transform to check distance against (leave null to use Camera.main or Player).")]
@@ -187,6 +203,463 @@ namespace ModernGrassTool
         private Vector4[] _windZoneVectors = new Vector4[MaxWindZones];
         private Vector4[] _windZoneParams = new Vector4[MaxWindZones];
         private Vector4[] _windZoneTimes = new Vector4[MaxWindZones];
+
+        [Header("Fire, Burn & Scorch Simulation")]
+        [Tooltip("Enable GPU-accelerated 2D burn map and fire spread simulation.")]
+        public bool enableFireSimulation = true;
+        [HideInInspector]
+        public GrassBurnMapMode burnMapMode = GrassBurnMapMode.PlayerCenteredFloating;
+        [HideInInspector]
+        public int burnMapResolution = 512;
+        [HideInInspector]
+        public Vector3 burnMapCenter = Vector3.zero;
+        [HideInInspector]
+        public float burnMapWorldSize = 256f;
+        [HideInInspector]
+        public bool autoFitBurnMapBounds = false;
+        [Tooltip("How burn and scorch marks fade or clear: None, Timer, Distance, or ManualOnly.")]
+        public GrassBurnFadeMode burnFadeMode = GrassBurnFadeMode.Timer;
+        [Tooltip("Duration in seconds for scorch marks to fade away (used in Timer mode).")]
+        public float burnFadeSeconds = 12.0f;
+        [Tooltip("Distance from player/camera before scorch marks clear (used in Distance mode).")]
+        public float burnFadeDistance = 45.0f;
+        [Range(20f, 100f)]
+        [Tooltip("Re-ignition Scorch Threshold (20% to 100%). Scorch percentage below which regrowing grass restores fuel and can be re-ignited. Higher % lets grass re-ignite sooner while regrowing; lower % requires grass to be greener before catching fire.")]
+        public float reignitionScorchThreshold = 40f;
+
+        [Header("Clustered Fire VFX Nodes")]
+        [Range(4, 32)]
+        [Tooltip("Maximum concurrent clustered fire VFX nodes spawned along the active flame wavefront.")]
+        public int maxFireNodes = 16;
+
+        [Range(0.8f, 4.0f)]
+        [Tooltip("Minimum distance between adjacent fire nodes to prevent overlapping and overdraw.")]
+        public float fireNodeMinDistance = 1.8f;
+
+        [Tooltip("Default fire particle prefab used when a grass layer does not assign a custom fireParticlePrefab.")]
+        public ParticleSystem defaultFireParticlePrefab;
+
+        // Backwards compatibility properties
+        public bool enableBurnFade
+        {
+            get => burnFadeMode == GrassBurnFadeMode.Timer;
+            set => burnFadeMode = value ? GrassBurnFadeMode.Timer : GrassBurnFadeMode.None;
+        }
+        public float burnFadeDuration
+        {
+            get => burnFadeSeconds;
+            set => burnFadeSeconds = value;
+        }
+
+        [Tooltip("Draw burn simulation world bounds in Scene view.")]
+        public bool drawBurnGizmo = false;
+        [HideInInspector]
+        public ComputeShader burnComputeShader;
+
+        private RenderTexture _burnMapA;
+        private RenderTexture _burnMapB;
+        private bool _burnPingPong = false;
+        private bool _hasActiveFire = false;
+        private float _lastFireActiveTime = -999f;
+        private int _kIgniteStamp = -1;
+        private int _kScorchStamp = -1;
+        private int _kSimulate = -1;
+        private int _kBakeFuel = -1;
+        private int _kBakeGrassPointsFuel = -1;
+        private int _kClearMap = -1;
+        private int _kClearStamp = -1;
+
+        public struct ActiveBurnPoint
+        {
+            public uint id;
+            public Vector3 position;
+            public float initialRadius;
+            public float maxRadius;
+            public float spreadSpeed;
+            public float time;
+            public float recoverTime;
+            public float burnDuration;
+            public float seed;
+            public Vector2 windDir;
+            public ParticleSystem firePrefab;
+            public bool isScorchOnly;
+
+            public float radius => maxRadius;
+        }
+        private static uint _nextBurnId = 1;
+        private readonly List<ActiveBurnPoint> _activeBurns = new List<ActiveBurnPoint>();
+        public int activeBurnCount => _activeBurns.Count;
+        public ActiveBurnPoint GetActiveBurn(int index) => (index >= 0 && index < _activeBurns.Count) ? _activeBurns[index] : default;
+        public bool TryGetActiveBurn(uint burnId, out ActiveBurnPoint burn)
+        {
+            for (int i = 0; i < _activeBurns.Count; i++)
+            {
+                if (_activeBurns[i].id == burnId)
+                {
+                    burn = _activeBurns[i];
+                    return true;
+                }
+            }
+            burn = default;
+            return false;
+        }
+        private readonly List<int> _tempIgniteQueryIndices = new List<int>();
+
+        private struct ActiveIgnitionSource
+        {
+            public Vector3 worldPos;
+            public Vector2 uvPos;
+            public float uvMaxRadius;
+            public float maxSpreadRadius;
+            public float spreadSpeed;
+            public float startTime;
+            public float lifetime;
+        }
+        private readonly List<ActiveIgnitionSource> _activeIgnitions = new List<ActiveIgnitionSource>();
+        private readonly Vector4[] _ignitionSourcesArray = new Vector4[16];
+
+        public const float SPATIAL_CELL_SIZE = 0.5f;
+        private readonly HashSet<long> _flammableGrassCells = new HashSet<long>();
+        private readonly Dictionary<long, byte> _cellLayerMap = new Dictionary<long, byte>();
+        private bool _flammableGrassCellsDirty = true;
+        private readonly Queue<long> _tempBfsQueue = new Queue<long>(1024);
+
+        public static long GetCellKey(int cx, int cz) => ((long)cx << 32) | (uint)cz;
+        public static long GetCellKeyFromWorldPos(float x, float z, float cellSize = SPATIAL_CELL_SIZE)
+        {
+            int cx = Mathf.FloorToInt(x / cellSize);
+            int cz = Mathf.FloorToInt(z / cellSize);
+            return ((long)cx << 32) | (uint)cz;
+        }
+
+        public void InvalidateSpatialGrid()
+        {
+            _flammableGrassCellsDirty = true;
+        }
+
+        public void EnsureSpatialGrid()
+        {
+            if (!_flammableGrassCellsDirty && _flammableGrassCells.Count > 0) return;
+
+            _flammableGrassCells.Clear();
+            _cellLayerMap.Clear();
+            if (layers == null || layers.Count == 0) return;
+
+            for (int l = 0; l < layers.Count; l++)
+            {
+                var layer = layers[l];
+                if (layer == null || !layer.canCatchFire) continue;
+
+                byte layerIdx = (byte)Mathf.Clamp(l, 0, 255);
+                if (layer.points != null && layer.points.Count > 0)
+                {
+                    for (int i = 0; i < layer.points.Count; i++)
+                    {
+                        var p = layer.points[i].position;
+                        int cx = Mathf.FloorToInt(p.x / SPATIAL_CELL_SIZE);
+                        int cz = Mathf.FloorToInt(p.z / SPATIAL_CELL_SIZE);
+                        long key = ((long)cx << 32) | (uint)cz;
+                        _flammableGrassCells.Add(key);
+                        if (!_cellLayerMap.ContainsKey(key)) _cellLayerMap[key] = layerIdx;
+                    }
+                }
+                else if (layer.chunks != null && layer.chunks.Count > 0)
+                {
+                    for (int c = 0; c < layer.chunks.Count; c++)
+                    {
+                        var chunk = layer.chunks[c];
+                        if (chunk == null || chunk.points == null) continue;
+                        for (int i = 0; i < chunk.points.Count; i++)
+                        {
+                            var p = chunk.points[i].position;
+                            int cx = Mathf.FloorToInt(p.x / SPATIAL_CELL_SIZE);
+                            int cz = Mathf.FloorToInt(p.z / SPATIAL_CELL_SIZE);
+                            long key = ((long)cx << 32) | (uint)cz;
+                            _flammableGrassCells.Add(key);
+                            if (!_cellLayerMap.ContainsKey(key)) _cellLayerMap[key] = layerIdx;
+                        }
+                    }
+                }
+            }
+
+            _flammableGrassCellsDirty = false;
+        }
+
+        public bool HasFlammableGrassCell(long cellKey)
+        {
+            EnsureSpatialGrid();
+            return _flammableGrassCells.Contains(cellKey);
+        }
+
+        public bool HasFlammableGrassAt(Vector3 worldPos, float radius = 0.6f)
+        {
+            EnsureSpatialGrid();
+            if (_flammableGrassCells.Count == 0) return false;
+
+            int centerCx = Mathf.FloorToInt(worldPos.x / SPATIAL_CELL_SIZE);
+            int centerCz = Mathf.FloorToInt(worldPos.z / SPATIAL_CELL_SIZE);
+            long centerKey = ((long)centerCx << 32) | (uint)centerCz;
+            if (_flammableGrassCells.Contains(centerKey)) return true;
+
+            int cellRadius = Mathf.Clamp(Mathf.CeilToInt(radius / SPATIAL_CELL_SIZE), 1, 3);
+            for (int dx = -cellRadius; dx <= cellRadius; dx++)
+            {
+                for (int dz = -cellRadius; dz <= cellRadius; dz++)
+                {
+                    if (dx == 0 && dz == 0) continue;
+                    long key = ((long)(centerCx + dx) << 32) | (uint)(centerCz + dz);
+                    if (_flammableGrassCells.Contains(key)) return true;
+                }
+            }
+            return false;
+        }
+
+        private readonly Dictionary<long, float> _cellIgniteTimes = new Dictionary<long, float>();
+        private readonly Dictionary<long, float> _cellExtinguishTimes = new Dictionary<long, float>();
+        private readonly Dictionary<long, float> _cellRecoverTimes = new Dictionary<long, float>();
+
+        public bool IsCellBurnedOrBurning(long cellKey)
+        {
+            float now = Time.time;
+            if (_cellRecoverTimes.TryGetValue(cellKey, out float recoverTime))
+            {
+                if (now < recoverTime) return true;
+                _cellRecoverTimes.Remove(cellKey);
+                _cellExtinguishTimes.Remove(cellKey);
+                _cellIgniteTimes.Remove(cellKey);
+            }
+            return false;
+        }
+
+        public bool IsCellActivelyFlaming(long cellKey)
+        {
+            float now = Time.time;
+            if (_cellRecoverTimes.TryGetValue(cellKey, out float recoverTime))
+            {
+                if (now >= recoverTime)
+                {
+                    _cellRecoverTimes.Remove(cellKey);
+                    _cellExtinguishTimes.Remove(cellKey);
+                    _cellIgniteTimes.Remove(cellKey);
+                    return false;
+                }
+
+                if (_cellExtinguishTimes.TryGetValue(cellKey, out float extTime))
+                {
+                    if (now >= extTime) return false;
+                    if (_cellIgniteTimes.TryGetValue(cellKey, out float ignTime))
+                    {
+                        return now >= ignTime;
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool IsCellExtinguishedAsh(long cellKey)
+        {
+            float now = Time.time;
+            if (_cellRecoverTimes.TryGetValue(cellKey, out float recoverTime))
+            {
+                if (now >= recoverTime)
+                {
+                    _cellRecoverTimes.Remove(cellKey);
+                    _cellExtinguishTimes.Remove(cellKey);
+                    _cellIgniteTimes.Remove(cellKey);
+                    return false;
+                }
+
+                if (_cellExtinguishTimes.TryGetValue(cellKey, out float extinguishTime))
+                {
+                    return now >= extinguishTime;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        public bool HasUnburntFlammableGrassAt(Vector3 worldPos, float radius, out GrassLayer foundLayer)
+        {
+            foundLayer = null;
+            EnsureSpatialGrid();
+            if (_flammableGrassCells.Count == 0) return false;
+
+            int centerCx = Mathf.FloorToInt(worldPos.x / SPATIAL_CELL_SIZE);
+            int centerCz = Mathf.FloorToInt(worldPos.z / SPATIAL_CELL_SIZE);
+            int cellRadius = Mathf.Clamp(Mathf.CeilToInt(radius / SPATIAL_CELL_SIZE), 1, 3);
+            float sqrRad = radius * radius;
+
+            for (int dx = -cellRadius; dx <= cellRadius; dx++)
+            {
+                for (int dz = -cellRadius; dz <= cellRadius; dz++)
+                {
+                    int cx = centerCx + dx;
+                    int cz = centerCz + dz;
+                    float wx = (cx + 0.5f) * SPATIAL_CELL_SIZE;
+                    float wz = (cz + 0.5f) * SPATIAL_CELL_SIZE;
+                    float dSq = (wx - worldPos.x) * (wx - worldPos.x) + (wz - worldPos.z) * (wz - worldPos.z);
+                    if (dSq > sqrRad) continue;
+
+                    long key = ((long)cx << 32) | (uint)cz;
+                    if (_flammableGrassCells.Contains(key) && !IsCellBurnedOrBurning(key))
+                    {
+                        if (foundLayer == null && _cellLayerMap.TryGetValue(key, out byte lIdx) && layers != null && lIdx < layers.Count)
+                        {
+                            foundLayer = layers[lIdx];
+                        }
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        public bool HasUnburntFlammableGrassAt(Vector3 worldPos, float radius)
+        {
+            return HasUnburntFlammableGrassAt(worldPos, radius, out _);
+        }
+
+        /// <summary>
+        /// Computes contiguous flammable grass reachable from the ignition origin within maxRadius, stopping at gaps > maxGap.
+        /// Returns the maximum reachable distance and populates reachableCells.
+        /// </summary>
+        public bool CalculateReachableGrass(
+            Vector3 origin,
+            float maxRadius,
+            float maxGap,
+            out float maxReachableRadius,
+            out HashSet<long> reachableCells
+        )
+        {
+            maxReachableRadius = 0f;
+            reachableCells = null;
+
+            EnsureSpatialGrid();
+            if (_flammableGrassCells.Count == 0) return false;
+
+            int startCx = Mathf.FloorToInt(origin.x / SPATIAL_CELL_SIZE);
+            int startCz = Mathf.FloorToInt(origin.z / SPATIAL_CELL_SIZE);
+            long startKey = ((long)startCx << 32) | (uint)startCz;
+
+            // If starting cell is already burned or burning, cannot reignite
+            if (IsCellBurnedOrBurning(startKey)) return false;
+
+            // If starting cell doesn't have grass directly, find closest grass cell within 1.2m
+            if (!_flammableGrassCells.Contains(startKey))
+            {
+                bool found = false;
+                float bestDistSq = float.MaxValue;
+                int bestCx = startCx, bestCz = startCz;
+
+                for (int dx = -2; dx <= 2; dx++)
+                {
+                    for (int dz = -2; dz <= 2; dz++)
+                    {
+                        long k = ((long)(startCx + dx) << 32) | (uint)(startCz + dz);
+                        if (_flammableGrassCells.Contains(k) && !IsCellBurnedOrBurning(k))
+                        {
+                            float wx = (startCx + dx + 0.5f) * SPATIAL_CELL_SIZE;
+                            float wz = (startCz + dz + 0.5f) * SPATIAL_CELL_SIZE;
+                            float dSq = (wx - origin.x) * (wx - origin.x) + (wz - origin.z) * (wz - origin.z);
+                            if (dSq < bestDistSq)
+                            {
+                                bestDistSq = dSq;
+                                bestCx = startCx + dx;
+                                bestCz = startCz + dz;
+                                found = true;
+                            }
+                        }
+                    }
+                }
+
+                if (!found) return false;
+                startCx = bestCx;
+                startCz = bestCz;
+                startKey = ((long)startCx << 32) | (uint)startCz;
+            }
+
+            reachableCells = ModernGrassFirePool.GetPooledCellSet();
+            reachableCells.Add(startKey);
+
+            _tempBfsQueue.Clear();
+            _tempBfsQueue.Enqueue(startKey);
+
+            float sqrMaxRad = maxRadius * maxRadius;
+            float maxDistSq = 0f;
+
+            // Step size for gap jumping
+            int stepRange = (maxGap > 0.75f) ? 2 : 1;
+
+            Vector2 wind2D = (Instance != null) 
+                ? new Vector2(Instance.windDirection.x, Instance.windDirection.z).normalized 
+                : Vector2.right;
+
+            Vector2 originUv = Vector2.zero;
+            if (Instance != null && Instance.WorldToBurnUV(origin, 0f, out Vector2 oUv, out _))
+            {
+                originUv = oUv;
+            }
+            float seed = originUv.x * 123.456f + originUv.y * 789.012f;
+
+            while (_tempBfsQueue.Count > 0)
+            {
+                long cur = _tempBfsQueue.Dequeue();
+                int curX = (int)(cur >> 32);
+                int curZ = (int)(cur & 0xFFFFFFFF);
+
+                float cellWorldX = (curX + 0.5f) * SPATIAL_CELL_SIZE;
+                float cellWorldZ = (curZ + 0.5f) * SPATIAL_CELL_SIZE;
+                float dSq = (cellWorldX - origin.x) * (cellWorldX - origin.x) + (cellWorldZ - origin.z) * (cellWorldZ - origin.z);
+                if (dSq > maxDistSq) maxDistSq = dSq;
+
+                for (int dx = -stepRange; dx <= stepRange; dx++)
+                {
+                    for (int dz = -stepRange; dz <= stepRange; dz++)
+                    {
+                        if (dx == 0 && dz == 0) continue;
+                        if (stepRange > 1 && (dx * dx + dz * dz > 4)) continue;
+
+                        int nx = curX + dx;
+                        int nz = curZ + dz;
+                        long nKey = ((long)nx << 32) | (uint)nz;
+
+                        if (reachableCells.Contains(nKey)) continue;
+                        if (!_flammableGrassCells.Contains(nKey)) continue;
+                        if (IsCellBurnedOrBurning(nKey)) continue; // Stop at burned ash / already burning zone
+
+                        float nWorldX = (nx + 0.5f) * SPATIAL_CELL_SIZE;
+                        float nWorldZ = (nz + 0.5f) * SPATIAL_CELL_SIZE;
+                        float dX = nWorldX - origin.x;
+                        float dZ = nWorldZ - origin.z;
+                        float nd = Mathf.Sqrt(dX * dX + dZ * dZ);
+
+                        // Match organic multi-harmonic wildfire shape exactly with GPU shader
+                        float angle = Mathf.Atan2(dZ, dX);
+                        float a1 = Mathf.Sin(angle * 2.0f + seed * 1.0f) * 0.22f;
+                        float a2 = Mathf.Cos(angle * 3.0f - seed * 1.7f) * 0.16f;
+                        float a3 = Mathf.Sin(angle * 5.0f + seed * 2.3f) * 0.10f;
+                        float a4 = Mathf.Cos(angle * 7.0f - seed * 0.9f) * 0.06f;
+                        float shapeFactor = 1.0f + a1 + a2 + a3 + a4;
+
+                        Vector2 dir = (nd > 0.0001f) ? new Vector2(dX / nd, dZ / nd) : Vector2.zero;
+                        float windAlignment = Vector2.Dot(dir, wind2D);
+                        float windStretch = 1.0f + windAlignment * 0.35f;
+
+                        float organicMaxRad = maxRadius * Mathf.Max(0.2f, shapeFactor) * windStretch;
+                        if (nd > organicMaxRad) continue;
+
+                        reachableCells.Add(nKey);
+                        _tempBfsQueue.Enqueue(nKey);
+                    }
+                }
+            }
+
+            maxReachableRadius = Mathf.Sqrt(maxDistSq);
+            return true;
+        }
+
+        private static Texture2D _defaultBurnMap;
 
         public static void RegisterWindZone(ModernGrassWindZone zone)
         {
@@ -376,23 +849,810 @@ namespace ModernGrassTool
         private List<Bounds> _gizmoBounds = new List<Bounds>();
         private Matrix4x4[] _meshInstancedMatrices = new Matrix4x4[1023];
 
+        private static Texture2D GetDefaultBurnMap()
+        {
+            if (_defaultBurnMap == null)
+            {
+                _defaultBurnMap = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _defaultBurnMap.SetPixel(0, 0, Color.clear);
+                _defaultBurnMap.Apply();
+            }
+            return _defaultBurnMap;
+        }
+
+        public Texture GetCurrentBurnMap()
+        {
+            if (!enableFireSimulation || _burnMapA == null) return GetDefaultBurnMap();
+            return _burnPingPong ? _burnMapB : _burnMapA;
+        }
+
+        public Bounds GetTotalGrassBounds()
+        {
+            Bounds total = new Bounds();
+            bool hasBounds = false;
+            if (layers != null)
+            {
+                for (int i = 0; i < layers.Count; i++)
+                {
+                    var layer = layers[i];
+                    if (layer == null || layer.PointCount == 0) continue;
+                    Bounds b = layer.CalculateBounds();
+                    if (!hasBounds)
+                    {
+                        total = b;
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        total.Encapsulate(b);
+                    }
+                }
+            }
+            if (!hasBounds)
+            {
+                total = new Bounds(transform.position, new Vector3(200f, 20f, 200f));
+            }
+            return total;
+        }
+
+        public void AutoFitBurnMapBounds()
+        {
+            Bounds total = GetTotalGrassBounds();
+            burnMapCenter = new Vector3(total.center.x, 0f, total.center.z);
+            float maxDim = Mathf.Max(total.size.x, total.size.z);
+            burnMapWorldSize = Mathf.Max(50f, Mathf.Ceil(maxDim * 1.25f));
+        }
+
+        public void EnsureBurnResources()
+        {
+            if (!enableFireSimulation) return;
+            ModernGrassFirePool.GetOrCreate();
+
+            if (burnMapMode == GrassBurnMapMode.FixedWorldBounds && autoFitBurnMapBounds && (burnMapWorldSize <= 1f || (burnMapCenter == Vector3.zero && burnMapWorldSize == 300f)))
+            {
+                AutoFitBurnMapBounds();
+            }
+
+            if (burnComputeShader == null)
+            {
+#if UNITY_EDITOR
+                burnComputeShader = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/ModernGrassTool/Runtime/ModernGrassBurnSim.compute");
+#endif
+            }
+
+            RenderTextureFormat targetFormat = SystemInfo.SupportsRandomWriteOnRenderTextureFormat(RenderTextureFormat.ARGBFloat)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+
+            if (_burnMapA == null || _burnMapA.width != burnMapResolution || _burnMapA.format != targetFormat)
+            {
+                if (_burnMapA != null) { _burnMapA.Release(); UnityEngine.Object.DestroyImmediate(_burnMapA); }
+                if (_burnMapB != null) { _burnMapB.Release(); UnityEngine.Object.DestroyImmediate(_burnMapB); }
+
+                int res = Mathf.Clamp(burnMapResolution, 256, 1024);
+                TextureWrapMode targetWrap = (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? TextureWrapMode.Repeat : TextureWrapMode.Clamp;
+
+                _burnMapA = new RenderTexture(res, res, 0, targetFormat, RenderTextureReadWrite.Linear);
+                _burnMapA.name = "GrassBurnMap_A";
+                _burnMapA.enableRandomWrite = true;
+                _burnMapA.filterMode = FilterMode.Bilinear;
+                _burnMapA.wrapMode = targetWrap;
+                _burnMapA.Create();
+
+                _burnMapB = new RenderTexture(res, res, 0, targetFormat, RenderTextureReadWrite.Linear);
+                _burnMapB.name = "GrassBurnMap_B";
+                _burnMapB.enableRandomWrite = true;
+                _burnMapB.filterMode = FilterMode.Bilinear;
+                _burnMapB.wrapMode = targetWrap;
+                _burnMapB.Create();
+
+                _burnPingPong = false;
+            }
+            else
+            {
+                TextureWrapMode targetWrap = (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? TextureWrapMode.Repeat : TextureWrapMode.Clamp;
+                if (_burnMapA.wrapMode != targetWrap) _burnMapA.wrapMode = targetWrap;
+                if (_burnMapB.wrapMode != targetWrap) _burnMapB.wrapMode = targetWrap;
+            }
+
+            if (burnComputeShader != null && _kIgniteStamp == -1)
+            {
+                _kIgniteStamp = burnComputeShader.FindKernel("IgniteStamp");
+                _kScorchStamp = burnComputeShader.FindKernel("ScorchStamp");
+                _kSimulate = burnComputeShader.FindKernel("Simulate");
+                _kBakeFuel = burnComputeShader.FindKernel("BakeFuel");
+                _kBakeGrassPointsFuel = burnComputeShader.FindKernel("BakeGrassPointsFuel");
+                _kClearMap = burnComputeShader.FindKernel("ClearMap");
+                _kClearStamp = burnComputeShader.FindKernel("ClearStamp");
+
+                BakeAllFuel();
+            }
+        }
+
+        public void ClearBurnMap()
+        {
+            if (_burnMapA == null || burnComputeShader == null || _kClearMap == -1) return;
+            int groups = Mathf.CeilToInt(burnMapResolution / 16f);
+            burnComputeShader.SetTexture(_kClearMap, "_BurnMapRW", _burnMapA);
+            burnComputeShader.SetFloat("_TextureSize", burnMapResolution);
+            burnComputeShader.Dispatch(_kClearMap, groups, groups, 1);
+
+            burnComputeShader.SetTexture(_kClearMap, "_BurnMapRW", _burnMapB);
+            burnComputeShader.Dispatch(_kClearMap, groups, groups, 1);
+        }
+
+        public void BakeAllFuel()
+        {
+            if (burnComputeShader == null || _burnMapA == null || layers == null) return;
+            if (_kBakeGrassPointsFuel == -1)
+            {
+                _kBakeGrassPointsFuel = burnComputeShader.FindKernel("BakeGrassPointsFuel");
+            }
+            if (_kBakeGrassPointsFuel == -1) return;
+
+            // Clear burn map so bare dirt starts with zero fuel
+            ClearBurnMap();
+
+            InvalidateSpatialGrid();
+            EnsureSpatialGrid();
+
+            Vector3 effCenter = burnMapCenter;
+            if (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating)
+            {
+                effCenter = GetEffectivePlayerPos();
+            }
+
+            burnComputeShader.SetFloat("_BurnMapWorldSize", Mathf.Max(1f, burnMapWorldSize));
+            burnComputeShader.SetVector("_BurnMapCenter", effCenter);
+            burnComputeShader.SetFloat("_BurnMapMode", (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? 1f : 0f);
+            burnComputeShader.SetFloat("_TextureSize", (float)burnMapResolution);
+
+            for (int l = 0; l < layers.Count; l++)
+            {
+                var layer = layers[l];
+                if (layer == null || !layer.canCatchFire) continue;
+
+                layer.EnsureBuffers();
+                if (layer.sourceBuffer == null || layer.PointCount == 0) continue;
+
+                burnComputeShader.SetBuffer(_kBakeGrassPointsFuel, "_GrassPoints", layer.sourceBuffer);
+                burnComputeShader.SetInt("_GrassPointCount", layer.PointCount);
+                burnComputeShader.SetFloat("_GrassClumpRadius", layer.clumpRadius);
+                burnComputeShader.SetFloat("_FireMaxSpreadGap", layer.fireMaxSpreadGap);
+
+                burnComputeShader.SetTexture(_kBakeGrassPointsFuel, "_BurnMapRW", _burnMapA);
+                int groups = Mathf.CeilToInt(layer.PointCount / 64f);
+                burnComputeShader.Dispatch(_kBakeGrassPointsFuel, groups, 1, 1);
+            }
+
+            // Sync both textures in ping-pong chain
+            Graphics.CopyTexture(_burnMapA, _burnMapB);
+        }
+
+        public bool WorldToBurnUV(Vector3 worldPos, float radius, out Vector2 uv, out float uvRadius)
+        {
+            uv = Vector2.zero;
+            uvRadius = 0f;
+
+            float size = Mathf.Max(1f, burnMapWorldSize);
+
+            if (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating)
+            {
+                // Toroidal Modulo Ring Buffer: frac(worldPos / size)
+                // Maps seamlessly and infinitely across the entire 10km+ world
+                float u = Mathf.Repeat(worldPos.x / size, 1.0f);
+                float v = Mathf.Repeat(worldPos.z / size, 1.0f);
+                uv = new Vector2(u, v);
+                uvRadius = radius / size;
+                return true;
+            }
+            else
+            {
+                // Fixed World Bounds Mode (Clamped bounds)
+                float u = (worldPos.x - burnMapCenter.x) / size + 0.5f;
+                float v = (worldPos.z - burnMapCenter.z) / size + 0.5f;
+
+                uv = new Vector2(u, v);
+                uvRadius = radius / size;
+
+                return (u >= 0f && u <= 1f && v >= 0f && v <= 1f);
+            }
+        }
+
+        public GrassLayer GetGrassLayerAt(Vector3 worldPos, float maxDistance = 4.0f)
+        {
+            if (layers == null || layers.Count == 0) return null;
+            float bestDistSq = float.MaxValue;
+            GrassLayer bestLayer = null;
+            float maxDistSq = maxDistance * maxDistance;
+
+            for (int i = 0; i < layers.Count; i++)
+            {
+                var l = layers[i];
+                if (l == null || !l.canCatchFire) continue;
+
+                if (l.chunks != null && l.chunks.Count > 0)
+                {
+                    for (int c = 0; c < l.chunks.Count; c++)
+                    {
+                        var chunk = l.chunks[c];
+                        if (chunk != null)
+                        {
+                            if (chunk.bounds.Contains(worldPos))
+                            {
+                                return l;
+                            }
+                            float dSq = chunk.bounds.SqrDistance(worldPos);
+                            if (dSq < bestDistSq)
+                            {
+                                bestDistSq = dSq;
+                                bestLayer = l;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    Bounds b = l.CalculateBounds();
+                    if (b.Contains(worldPos)) return l;
+                    float dSq = b.SqrDistance(worldPos);
+                    if (dSq < bestDistSq)
+                    {
+                        bestDistSq = dSq;
+                        bestLayer = l;
+                    }
+                }
+            }
+
+            return (bestDistSq <= maxDistSq) ? bestLayer : null;
+        }
+
+        public float GetGrassSpreadRadiusAt(Vector3 worldPos)
+        {
+            var l = GetGrassLayerAt(worldPos);
+            return (l != null && l.canCatchFire) ? l.fireSpreadRadius : 3.5f;
+        }
+
+        public float GetGrassSpreadSpeedAt(Vector3 worldPos)
+        {
+            var l = GetGrassLayerAt(worldPos);
+            return (l != null && l.canCatchFire) ? l.fireSpreadSpeed : 1.0f;
+        }
+
+        /// <summary>
+        /// Static check: Returns true if flammable unburnt grass exists at the given position and can be ignited.
+        /// Returns false if the ground is bare dirt/stone, or if the grass is already burned to ash / currently on fire.
+        /// </summary>
+        public static bool CanIgnite(Vector3 worldPos, float radius = 1.5f)
+        {
+            if (Instance != null) return Instance.CanIgniteAt(worldPos, radius, out _);
+            var mgr = FindAnyObjectByType<ModernGrassManager>();
+            return mgr != null && mgr.CanIgniteAt(worldPos, radius, out _);
+        }
+
+        /// <summary>
+        /// Validates whether flammable unburnt grass exists at worldPos that is eligible to catch fire.
+        /// Returns false if no flammable grass exists nearby, or if the area is already burning or burned to ash stubbles.
+        /// </summary>
+        public bool CanIgniteAt(Vector3 worldPos, float radius, out GrassLayer hitLayer)
+        {
+            hitLayer = null;
+            if (!enableFireSimulation || layers == null || layers.Count == 0) return false;
+
+            // 1. Spatial Grass Presence & Layer Lookup: O(1) check ensuring unburnt flammable grass exists at this position
+            float queryRadius = radius + 0.6f;
+            if (!HasUnburntFlammableGrassAt(worldPos, queryRadius, out hitLayer) || hitLayer == null)
+            {
+                return false; // Bare ground, stone, or already burned down to black ash!
+            }
+
+            int centerCx = Mathf.FloorToInt(worldPos.x / SPATIAL_CELL_SIZE);
+            int centerCz = Mathf.FloorToInt(worldPos.z / SPATIAL_CELL_SIZE);
+            long centerKey = ((long)centerCx << 32) | (uint)centerCz;
+            if (IsCellBurnedOrBurning(centerKey))
+            {
+                return false; // Center contact point is already on fire or burned to black ash stubbles!
+            }
+
+            // 2. Active Burn / Ash Stubble Check: Ensure this spot isn't already burning or burned to ash
+            float now = Time.time;
+            for (int i = 0; i < _activeBurns.Count; i++)
+            {
+                var burn = _activeBurns[i];
+                if (now >= burn.recoverTime) continue; // Burn has recovered/regrown
+
+                // Calculate the currently reached burn/fire radius
+                float elapsed = now - burn.time;
+                float currentBurnRadius = (burn.spreadSpeed > 0.05f) 
+                    ? Mathf.Min(burn.maxRadius, burn.initialRadius + elapsed * burn.spreadSpeed) 
+                    : burn.maxRadius;
+
+                float distSq = (worldPos.x - burn.position.x) * (worldPos.x - burn.position.x) + 
+                               (worldPos.z - burn.position.z) * (worldPos.z - burn.position.z);
+                float effectiveRadius = currentBurnRadius + radius * 0.2f;
+
+                if (distSq <= effectiveRadius * effectiveRadius)
+                {
+                    // Already burning or already burned to ash stubble!
+                    return false;
+                }
+            }
+
+            // 3. Active Fire Pool Particles Check: Also verify no active fire particle system is currently covering this spot
+            if (ModernGrassFirePool.Instance != null && ModernGrassFirePool.Instance.IsFireActiveAt(worldPos, radius))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        public static void IgniteAt(Vector3 worldPos, float radius = 1.5f, float maxSpreadRadius = -1f)
+        {
+            if (Instance != null) Instance.IgniteInternal(worldPos, radius, maxSpreadRadius);
+            else FindAnyObjectByType<ModernGrassManager>()?.IgniteInternal(worldPos, radius, maxSpreadRadius);
+        }
+
+        public void IgniteInternal(Vector3 worldPos, float radius, float maxSpreadRadius = -1f)
+        {
+            if (!enableFireSimulation) return;
+            EnsureBurnResources();
+            if (burnComputeShader == null || _burnMapA == null || _kIgniteStamp == -1) return;
+
+            // Validate that flammable unburnt grass actually exists at this position
+            if (!CanIgniteAt(worldPos, radius, out GrassLayer hitLayer))
+            {
+                return;
+            }
+
+            if (maxSpreadRadius <= 0f)
+            {
+                maxSpreadRadius = (hitLayer != null && hitLayer.canCatchFire) ? hitLayer.fireSpreadRadius : GetGrassSpreadRadiusAt(worldPos);
+            }
+            maxSpreadRadius = Mathf.Max(radius, maxSpreadRadius);
+            float spreadSpeed = (hitLayer != null && hitLayer.canCatchFire) ? hitLayer.fireSpreadSpeed : GetGrassSpreadSpeedAt(worldPos);
+
+            if (WorldToBurnUV(worldPos, radius, out Vector2 uv, out float uvRadius))
+            {
+                WorldToBurnUV(worldPos, maxSpreadRadius, out _, out float uvSpreadRadius);
+
+                RenderTexture src = _burnPingPong ? _burnMapB : _burnMapA;
+                RenderTexture dst = _burnPingPong ? _burnMapA : _burnMapB;
+
+                burnComputeShader.SetTexture(_kIgniteStamp, "_BurnMapRead", src);
+                burnComputeShader.SetTexture(_kIgniteStamp, "_BurnMapRW", dst);
+                burnComputeShader.SetVector("_StampPos", uv);
+                burnComputeShader.SetFloat("_StampRadius", Mathf.Max(0.002f, uvRadius));
+                burnComputeShader.SetFloat("_StampIntensity", 1.0f);
+                burnComputeShader.SetFloat("_TextureSize", (float)burnMapResolution);
+                burnComputeShader.SetFloat("_ReignitionThreshold", Mathf.Clamp(reignitionScorchThreshold / 100f, 0.2f, 1.0f));
+
+                int groups = Mathf.CeilToInt(burnMapResolution / 16f);
+                burnComputeShader.Dispatch(_kIgniteStamp, groups, groups, 1);
+
+                // Hardware GPU copy to keep both buffers 100% in sync and prevent any ping-pong alternating/flickering
+                Graphics.CopyTexture(dst, src);
+
+                _burnPingPong = !_burnPingPong;
+                _hasActiveFire = true;
+                _lastFireActiveTime = Time.time;
+                _fireActiveTimer = (burnFadeMode == GrassBurnFadeMode.Timer) ? Mathf.Max(_fireActiveTimer, burnFadeSeconds + 30f) : 35f;
+
+                float ignSpreadDist = Mathf.Max(0f, maxSpreadRadius - radius);
+                float ignSpreadDur = (spreadSpeed > 0.05f) ? (ignSpreadDist / spreadSpeed) : 0f;
+                float ignBurnDur = (hitLayer != null) ? Mathf.Max(1.0f, hitLayer.burnDuration) : 3.0f;
+
+                float fadeTime = (burnFadeMode == GrassBurnFadeMode.Timer) 
+                    ? burnFadeSeconds * Mathf.Clamp01(1.0f - (reignitionScorchThreshold / 100f)) 
+                    : float.MaxValue;
+                float recoverTime = (fadeTime < float.MaxValue) ? (Time.time + ignSpreadDur + ignBurnDur + fadeTime) : float.MaxValue;
+
+                float actualMaxRad = maxSpreadRadius;
+                HashSet<long> reachableCells = null;
+                float gap = (hitLayer != null) ? hitLayer.fireMaxSpreadGap : 0.6f;
+                if (CalculateReachableGrass(worldPos, maxSpreadRadius, gap, out float maxReachable, out reachableCells))
+                {
+                    actualMaxRad = Mathf.Min(maxSpreadRadius, maxReachable + 0.6f);
+                }
+
+                // Register all reached cells in cell burn registry with calculated extinguish and recover times!
+                float ignSeed = uv.x * 123.456f + uv.y * 789.012f;
+                Vector2 ignWind2D = (windDirection.sqrMagnitude > 0.001f) 
+                    ? new Vector2(windDirection.x, windDirection.z).normalized 
+                    : Vector2.right;
+
+                if (reachableCells != null && reachableCells.Count > 0)
+                {
+                    float now = Time.time;
+                    foreach (long cellKey in reachableCells)
+                    {
+                        int cx = (int)(cellKey >> 32);
+                        int cz = (int)(cellKey & 0xFFFFFFFF);
+                        float cellWorldX = (cx + 0.5f) * SPATIAL_CELL_SIZE;
+                        float cellWorldZ = (cz + 0.5f) * SPATIAL_CELL_SIZE;
+                        float dX = cellWorldX - worldPos.x;
+                        float dZ = cellWorldZ - worldPos.z;
+                        float d = Mathf.Sqrt(dX * dX + dZ * dZ);
+
+                        float angle = Mathf.Atan2(dZ, dX);
+                        float a1 = Mathf.Sin(angle * 2.0f + ignSeed * 1.0f) * 0.22f;
+                        float a2 = Mathf.Cos(angle * 3.0f - ignSeed * 1.7f) * 0.16f;
+                        float a3 = Mathf.Sin(angle * 5.0f + ignSeed * 2.3f) * 0.10f;
+                        float a4 = Mathf.Cos(angle * 7.0f - ignSeed * 0.9f) * 0.06f;
+                        float shapeFactor = 1.0f + a1 + a2 + a3 + a4;
+
+                        Vector2 dir = (d > 0.0001f) ? new Vector2(dX / d, dZ / d) : Vector2.zero;
+                        float windAlignment = Vector2.Dot(dir, ignWind2D);
+                        float windStretch = 1.0f + windAlignment * 0.35f;
+                        float localSpeedMultiplier = Mathf.Max(0.2f, shapeFactor) * windStretch;
+
+                        float effectiveSpeed = spreadSpeed * localSpeedMultiplier;
+                        float cellIgniteTime = now + (effectiveSpeed > 0.05f ? (d / effectiveSpeed) : 0f);
+                        float cellExtinguishTime = cellIgniteTime + ignBurnDur;
+                        float cellRecoverTime = cellExtinguishTime + fadeTime;
+
+                        _cellIgniteTimes[cellKey] = cellIgniteTime;
+                        _cellExtinguishTimes[cellKey] = cellExtinguishTime;
+                        _cellRecoverTimes[cellKey] = cellRecoverTime;
+                    }
+                }
+
+                _activeBurns.Add(new ActiveBurnPoint 
+                { 
+                    id = _nextBurnId++,
+                    position = worldPos, 
+                    initialRadius = radius, 
+                    maxRadius = actualMaxRad, 
+                    spreadSpeed = spreadSpeed, 
+                    time = Time.time,
+                    recoverTime = recoverTime,
+                    burnDuration = ignBurnDur,
+                    seed = ignSeed,
+                    windDir = ignWind2D,
+                    firePrefab = (hitLayer != null && hitLayer.fireParticlePrefab != null) ? hitLayer.fireParticlePrefab : defaultFireParticlePrefab
+                });
+
+                // Old expanding ring fire VFX removed (Preparing for Part 2: Discrete Clustered Fire Nodes)
+                if (reachableCells != null)
+                {
+                    ModernGrassFirePool.ReleasePooledCellSet(reachableCells);
+                }
+
+                // Register or merge active ignition source for max spread radius containment
+                float lifetime = ignSpreadDur + ignBurnDur + 0.5f;
+                bool merged = false;
+                for (int i = 0; i < _activeIgnitions.Count; i++)
+                {
+                    var ign = _activeIgnitions[i];
+                    if (Vector3.Distance(ign.worldPos, worldPos) < 1.2f)
+                    {
+                        ign.worldPos = worldPos;
+                        ign.uvPos = uv;
+                        ign.uvMaxRadius = Mathf.Max(ign.uvMaxRadius, Mathf.Max(0.002f, uvSpreadRadius));
+                        ign.maxSpreadRadius = Mathf.Max(ign.maxSpreadRadius, maxSpreadRadius);
+                        ign.spreadSpeed = spreadSpeed;
+                        ign.startTime = Time.time;
+                        ign.lifetime = lifetime;
+                        _activeIgnitions[i] = ign;
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged)
+                {
+                    if (_activeIgnitions.Count >= 16)
+                    {
+                        _activeIgnitions.RemoveAt(0);
+                    }
+                    _activeIgnitions.Add(new ActiveIgnitionSource
+                    {
+                        worldPos = worldPos,
+                        uvPos = uv,
+                        uvMaxRadius = Mathf.Max(0.002f, uvSpreadRadius),
+                        maxSpreadRadius = maxSpreadRadius,
+                        spreadSpeed = spreadSpeed,
+                        startTime = Time.time,
+                        lifetime = lifetime
+                    });
+                }
+            }
+        }
+
+        public static void ScorchAt(Vector3 worldPos, float radius = 2.5f, float intensity = 1.0f)
+        {
+            if (Instance != null) Instance.ScorchInternal(worldPos, radius, intensity);
+            else FindAnyObjectByType<ModernGrassManager>()?.ScorchInternal(worldPos, radius, intensity);
+        }
+
+        public void ScorchInternal(Vector3 worldPos, float radius, float intensity)
+        {
+            if (!enableFireSimulation) return;
+            EnsureBurnResources();
+            if (burnComputeShader == null || _burnMapA == null || _kScorchStamp == -1) return;
+
+            if (WorldToBurnUV(worldPos, radius, out Vector2 uv, out float uvRadius))
+            {
+                RenderTexture src = _burnPingPong ? _burnMapB : _burnMapA;
+                RenderTexture dst = _burnPingPong ? _burnMapA : _burnMapB;
+
+                burnComputeShader.SetTexture(_kScorchStamp, "_BurnMapRead", src);
+                burnComputeShader.SetTexture(_kScorchStamp, "_BurnMapRW", dst);
+                burnComputeShader.SetVector("_StampPos", uv);
+                burnComputeShader.SetFloat("_StampRadius", Mathf.Max(0.002f, uvRadius));
+                burnComputeShader.SetFloat("_StampIntensity", Mathf.Clamp01(intensity));
+                burnComputeShader.SetFloat("_TextureSize", (float)burnMapResolution);
+
+                int groups = Mathf.CeilToInt(burnMapResolution / 16f);
+                burnComputeShader.Dispatch(_kScorchStamp, groups, groups, 1);
+
+                // Hardware GPU copy to keep both buffers 100% in sync and prevent any ping-pong alternating/flickering
+                Graphics.CopyTexture(dst, src);
+
+                _burnPingPong = !_burnPingPong;
+                _hasActiveFire = true;
+                _fireActiveTimer = (burnFadeMode == GrassBurnFadeMode.Timer) ? Mathf.Max(_fireActiveTimer, burnFadeSeconds + 5f) : 25f;
+
+                float fadeTime = (burnFadeMode == GrassBurnFadeMode.Timer) 
+                    ? burnFadeSeconds * Mathf.Clamp01(1.0f - (reignitionScorchThreshold / 100f)) 
+                    : float.MaxValue;
+                float recoverTime = (fadeTime < float.MaxValue) ? (Time.time + fadeTime) : float.MaxValue;
+
+                _activeBurns.Add(new ActiveBurnPoint 
+                { 
+                    id = _nextBurnId++,
+                    position = worldPos, 
+                    initialRadius = radius, 
+                    maxRadius = radius, 
+                    spreadSpeed = 0f, 
+                    time = Time.time,
+                    recoverTime = recoverTime,
+                    burnDuration = 0f,
+                    seed = 0f,
+                    windDir = Vector2.right,
+                    firePrefab = null,
+                    isScorchOnly = true
+                });
+            }
+        }
+
+        /// <summary>
+        /// Clears/restores scorch marks within a specific radius back to healthy grass.
+        /// </summary>
+        public static void ClearBurnAt(Vector3 worldPos, float radius = 3.0f)
+        {
+            if (Instance != null) Instance.ClearBurnInternal(worldPos, radius);
+            else FindAnyObjectByType<ModernGrassManager>()?.ClearBurnInternal(worldPos, radius);
+        }
+
+        /// <summary>
+        /// Clears all scorch and burn marks across the entire map immediately.
+        /// </summary>
+        public static void ClearAllBurn()
+        {
+            if (Instance != null) Instance.ClearAllBurnInternal();
+            else FindAnyObjectByType<ModernGrassManager>()?.ClearAllBurnInternal();
+        }
+
+        public void ClearAllBurnInternal()
+        {
+            _activeBurns.Clear();
+            _activeIgnitions.Clear();
+            _cellIgniteTimes.Clear();
+            _cellExtinguishTimes.Clear();
+            _cellRecoverTimes.Clear();
+            _hasActiveFire = false;
+            _fireActiveTimer = 0f;
+            ModernGrassFirePool.Instance?.StopAllFire();
+            BakeAllFuel();
+        }
+
+        public void ClearBurnInternal(Vector3 worldPos, float radius)
+        {
+            if (!enableFireSimulation) return;
+            EnsureBurnResources();
+            if (burnComputeShader == null || _burnMapA == null || _kClearStamp == -1) return;
+
+            // Clear cells within radius from cell burn registry
+            int clearCx = Mathf.FloorToInt(worldPos.x / SPATIAL_CELL_SIZE);
+            int clearCz = Mathf.FloorToInt(worldPos.z / SPATIAL_CELL_SIZE);
+            int r = Mathf.CeilToInt(radius / SPATIAL_CELL_SIZE) + 1;
+            float sqrR = radius * radius;
+            for (int dx = -r; dx <= r; dx++)
+            {
+                for (int dz = -r; dz <= r; dz++)
+                {
+                    int cx = clearCx + dx;
+                    int cz = clearCz + dz;
+                    float wx = (cx + 0.5f) * SPATIAL_CELL_SIZE;
+                    float wz = (cz + 0.5f) * SPATIAL_CELL_SIZE;
+                    if ((wx - worldPos.x) * (wx - worldPos.x) + (wz - worldPos.z) * (wz - worldPos.z) <= sqrR)
+                    {
+                        long key = ((long)cx << 32) | (uint)cz;
+                        _cellIgniteTimes.Remove(key);
+                        _cellExtinguishTimes.Remove(key);
+                        _cellRecoverTimes.Remove(key);
+                    }
+                }
+            }
+
+            for (int i = _activeIgnitions.Count - 1; i >= 0; i--)
+            {
+                if (Vector3.Distance(_activeIgnitions[i].worldPos, worldPos) <= radius)
+                {
+                    _activeIgnitions.RemoveAt(i);
+                }
+            }
+
+            for (int i = _activeBurns.Count - 1; i >= 0; i--)
+            {
+                float d = Vector3.Distance(_activeBurns[i].position, worldPos);
+                if (d <= radius + _activeBurns[i].maxRadius)
+                {
+                    _activeBurns.RemoveAt(i);
+                }
+            }
+
+            if (WorldToBurnUV(worldPos, radius, out Vector2 uv, out float uvRadius))
+            {
+                RenderTexture src = _burnPingPong ? _burnMapB : _burnMapA;
+                RenderTexture dst = _burnPingPong ? _burnMapA : _burnMapB;
+
+                burnComputeShader.SetTexture(_kClearStamp, "_BurnMapRead", src);
+                burnComputeShader.SetTexture(_kClearStamp, "_BurnMapRW", dst);
+                burnComputeShader.SetVector("_StampPos", uv);
+                burnComputeShader.SetFloat("_StampRadius", Mathf.Max(0.005f, uvRadius));
+                burnComputeShader.SetFloat("_TextureSize", (float)burnMapResolution);
+                burnComputeShader.SetFloat("_ReignitionThreshold", Mathf.Clamp(reignitionScorchThreshold / 100f, 0.2f, 1.0f));
+
+                int groups = Mathf.CeilToInt(burnMapResolution / 16f);
+                burnComputeShader.Dispatch(_kClearStamp, groups, groups, 1);
+
+                Graphics.CopyTexture(dst, src);
+                _burnPingPong = !_burnPingPong;
+            }
+        }
+
+        private void ReleaseBurnResources()
+        {
+            if (_burnMapA != null) { _burnMapA.Release(); UnityEngine.Object.DestroyImmediate(_burnMapA); _burnMapA = null; }
+            if (_burnMapB != null) { _burnMapB.Release(); UnityEngine.Object.DestroyImmediate(_burnMapB); _burnMapB = null; }
+            _kIgniteStamp = -1;
+            _kScorchStamp = -1;
+            _kSimulate = -1;
+            _kBakeFuel = -1;
+            _kBakeGrassPointsFuel = -1;
+            _kClearMap = -1;
+            _kClearStamp = -1;
+            _activeBurns.Clear();
+            _activeIgnitions.Clear();
+        }
+
+        private float _fireActiveTimer = 0f;
+
+        public void UpdateBurnSimulation()
+        {
+            if (!enableFireSimulation || burnComputeShader == null) return;
+            if (_kSimulate == -1) EnsureBurnResources();
+            if (_burnMapA == null || _kSimulate == -1) return;
+
+            if (_hasActiveFire)
+            {
+                _fireActiveTimer = 35f;
+                _hasActiveFire = false;
+            }
+
+            if (_fireActiveTimer <= 0f) return;
+            _fireActiveTimer -= Time.deltaTime;
+
+            // Get average burn duration & spread radius across flammable layers
+            float avgBurnDuration = 3.5f;
+            float avgSpreadSpeed = 1.0f;
+            if (layers != null && layers.Count > 0)
+            {
+                float sumDuration = 0f;
+                float sumSpread = 0f;
+                int count = 0;
+                for (int i = 0; i < layers.Count; i++)
+                {
+                    var l = layers[i];
+                    if (l != null && l.canCatchFire)
+                    {
+                        sumDuration += Mathf.Max(0.5f, l.burnDuration);
+                        sumSpread += Mathf.Max(0.1f, l.fireSpreadSpeed);
+                        count++;
+                    }
+                }
+                if (count > 0)
+                {
+                    avgBurnDuration = sumDuration / count;
+                    avgSpreadSpeed = sumSpread / count;
+                }
+            }
+
+            // Prune expired ignition sources
+            float now = Time.time;
+            for (int i = _activeIgnitions.Count - 1; i >= 0; i--)
+            {
+                if (now - _activeIgnitions[i].startTime > _activeIgnitions[i].lifetime)
+                {
+                    _activeIgnitions.RemoveAt(i);
+                }
+            }
+
+            int ignCount = Mathf.Min(_activeIgnitions.Count, 16);
+            for (int i = 0; i < 16; i++)
+            {
+                if (i < ignCount)
+                {
+                    var ign = _activeIgnitions[i];
+                    _ignitionSourcesArray[i] = new Vector4(ign.uvPos.x, ign.uvPos.y, ign.uvMaxRadius, Mathf.Max(0.05f, ign.spreadSpeed));
+                }
+                else
+                {
+                    _ignitionSourcesArray[i] = Vector4.zero;
+                }
+            }
+            burnComputeShader.SetInt("_IgnitionSourceCount", ignCount);
+            burnComputeShader.SetVectorArray("_IgnitionSources", _ignitionSourcesArray);
+
+            RenderTexture src = _burnPingPong ? _burnMapB : _burnMapA;
+            RenderTexture dst = _burnPingPong ? _burnMapA : _burnMapB;
+
+            burnComputeShader.SetTexture(_kSimulate, "_BurnMapRead", src);
+            burnComputeShader.SetTexture(_kSimulate, "_BurnMapRW", dst);
+            burnComputeShader.SetFloat("_DeltaTime", Mathf.Clamp(Time.deltaTime, 0.001f, 0.05f));
+            burnComputeShader.SetFloat("_BurnDuration", avgBurnDuration);
+            burnComputeShader.SetFloat("_SpreadSpeed", avgSpreadSpeed);
+            Vector2 wind2D = new Vector2(windDirection.x, windDirection.z).normalized;
+            burnComputeShader.SetVector("_WindVector", wind2D);
+            burnComputeShader.SetFloat("_TextureSize", (float)burnMapResolution);
+            burnComputeShader.SetFloat("_BurnMapWorldSize", Mathf.Max(1f, burnMapWorldSize));
+
+            float fadeRate = (burnFadeMode == GrassBurnFadeMode.Timer) ? (1.0f / Mathf.Max(0.1f, burnFadeSeconds)) : 0.0f;
+            burnComputeShader.SetFloat("_FadeRate", fadeRate);
+            burnComputeShader.SetFloat("_ReignitionThreshold", Mathf.Clamp(reignitionScorchThreshold / 100f, 0.2f, 1.0f));
+
+            int groups = Mathf.CeilToInt(burnMapResolution / 16f);
+            burnComputeShader.Dispatch(_kSimulate, groups, groups, 1);
+
+            _burnPingPong = !_burnPingPong;
+        }
+
         private void Awake()
         {
             Instance = this;
             EnsureTerrainBaker();
+            EnsureBurnResources();
         }
+
+        private void Start()
+        {
+            EnsureSpatialGrid();
+            if (enableFireSimulation)
+            {
+                BakeAllFuel();
+            }
+        }
+
+        private ModernRenderTerrainMap _cachedTerrainBaker;
 
         public ModernRenderTerrainMap EnsureTerrainBaker()
         {
+            if (_cachedTerrainBaker != null) return _cachedTerrainBaker;
             var existing = FindAnyObjectByType<ModernRenderTerrainMap>();
-            if (existing != null) return existing;
+            if (existing != null)
+            {
+                _cachedTerrainBaker = existing;
+                return _cachedTerrainBaker;
+            }
 
             GameObject mapGo = new GameObject("ModernRenderTerrainMap");
             mapGo.transform.SetParent(transform);
             mapGo.transform.localPosition = Vector3.zero;
             var baker = mapGo.AddComponent<ModernRenderTerrainMap>();
             baker.SetupAndBake();
-            return baker;
+            _cachedTerrainBaker = baker;
+            return _cachedTerrainBaker;
         }
 
         private void OnEnable()
@@ -572,6 +1832,7 @@ namespace ModernGrassTool
 
         public void ReleaseAllBuffers()
         {
+            ReleaseBurnResources();
             if (layers == null) return;
             for (int i = 0; i < layers.Count; i++)
             {
@@ -604,45 +1865,78 @@ namespace ModernGrassTool
             }
         }
 
+        public Vector3 GetEffectivePlayerPos()
+        {
+            if (playerReference != null) return playerReference.position;
+            if (Camera.main != null) return Camera.main.transform.position;
+            var player = UnityEngine.Object.FindFirstObjectByType<ThirdPersonPlayerController>();
+            if (player != null)
+            {
+                playerReference = player.transform;
+                return player.transform.position;
+            }
+            return transform.position;
+        }
+
         private void Update()
         {
             if (!Application.isPlaying) return;
-            if (_activeCuts.Count == 0) return;
 
-            if (regrowthMode == GrassRegrowthMode.Timer)
+            UpdateBurnSimulation();
+
+            // 1. Distance-based burn clearing (when explicitly in Distance mode)
+            if (burnFadeMode == GrassBurnFadeMode.Distance && _activeBurns.Count > 0)
             {
-                float now = Time.time;
-                for (int i = _activeCuts.Count - 1; i >= 0; i--)
+                Vector3 refPos = GetEffectivePlayerPos();
+                float sqrDistThreshold = burnFadeDistance * burnFadeDistance;
+                for (int i = _activeBurns.Count - 1; i >= 0; i--)
                 {
-                    var cut = _activeCuts[i];
-                    if (now - cut.cutTime >= regrowDelaySeconds)
+                    var burn = _activeBurns[i];
+                    float sqrDist = (refPos.x - burn.position.x) * (refPos.x - burn.position.x) + (refPos.z - burn.position.z) * (refPos.z - burn.position.z);
+                    if (sqrDist >= sqrDistThreshold)
                     {
-                        RestoreCutPoint(cut.layerIndex, cut.pointIndex, cut.position);
-                        _activeCuts.RemoveAt(i);
+                        ClearBurnInternal(burn.position, burn.maxRadius * 1.5f);
+                        _activeBurns.RemoveAt(i);
                     }
                 }
             }
-            else if (regrowthMode == GrassRegrowthMode.Distance)
+            // 2. Open-World Toroidal Ring Buffer Eviction (when burns scroll outside the window)
+            else if (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating && _activeBurns.Count > 0)
             {
-                Vector3 refPos = Vector3.zero;
-                if (playerReference != null)
+                Vector3 refPos = GetEffectivePlayerPos();
+                float evictDist = Mathf.Max(10f, burnMapWorldSize * 0.48f);
+                float sqrEvict = evictDist * evictDist;
+                for (int i = _activeBurns.Count - 1; i >= 0; i--)
                 {
-                    refPos = playerReference.position;
-                }
-                else if (Camera.main != null)
-                {
-                    refPos = Camera.main.transform.position;
-                }
-                else
-                {
-                    var player = UnityEngine.Object.FindFirstObjectByType<ThirdPersonPlayerController>();
-                    if (player != null)
+                    var burn = _activeBurns[i];
+                    float sqrDist = (refPos.x - burn.position.x) * (refPos.x - burn.position.x) + (refPos.z - burn.position.z) * (refPos.z - burn.position.z);
+                    if (sqrDist >= sqrEvict)
                     {
-                        playerReference = player.transform;
-                        refPos = player.transform.position;
+                        ClearBurnInternal(burn.position, burn.maxRadius * 1.5f);
+                        _activeBurns.RemoveAt(i);
                     }
                 }
+            }
+            // 3. Timer Mode Burn Expiration (when scorch has faded enough to allow reignition)
+            else if (burnFadeMode == GrassBurnFadeMode.Timer && _activeBurns.Count > 0)
+            {
+                float now = Time.time;
+                for (int i = _activeBurns.Count - 1; i >= 0; i--)
+                {
+                    if (now >= _activeBurns[i].recoverTime)
+                    {
+                        _activeBurns.RemoveAt(i);
+                    }
+                }
+            }
 
+            if (_activeCuts.Count == 0) return;
+
+            // Note: Timer regrowth mode is 100% GPU-driven on the compute shader (_Time - cutTime),
+            // requiring zero CPU polling or frame-by-frame buffer uploads!
+            if (regrowthMode == GrassRegrowthMode.Distance)
+            {
+                Vector3 refPos = GetEffectivePlayerPos();
                 float sqrDistThreshold = regrowDistance * regrowDistance;
                 for (int i = _activeCuts.Count - 1; i >= 0; i--)
                 {
@@ -755,6 +2049,35 @@ namespace ModernGrassTool
                     _activeCuts.RemoveAt(i);
                 }
             }
+
+            if (layers != null)
+            {
+                List<int> queryIndices = new List<int>();
+                for (int l = 0; l < layers.Count; l++)
+                {
+                    var layer = layers[l];
+                    if (layer == null || layer.cutHeights == null) continue;
+                    queryIndices.Clear();
+                    if (layer.cullingTree != null)
+                        layer.cullingTree.ReturnLeafList(center, queryIndices, radius);
+                    else
+                        for (int i = 0; i < layer.PointCount; i++) queryIndices.Add(i);
+
+                    for (int i = 0; i < queryIndices.Count; i++)
+                    {
+                        int idx = queryIndices[i];
+                        if (idx >= 0 && idx < layer.points.Count && layer.cutHeights[idx] >= 0f)
+                        {
+                            Vector3 pPos = layer.points[idx].position;
+                            float sqrDist = (center.x - pPos.x) * (center.x - pPos.x) + (center.z - pPos.z) * (center.z - pPos.z);
+                            if (sqrDist <= sqrRadius)
+                            {
+                                RestoreCutPoint(l, idx, pPos);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         public void CutGrass(Vector3 hitPoint, float radius, float stubbleHeight = -1f)
@@ -796,12 +2119,33 @@ namespace ModernGrassTool
 
                     if (sqrDist <= sqrRadius)
                     {
-                        // Cut near root to leave a visible blunt stubble (MinionsArt style)
-                        float targetCut = pPos.y + stubbleHeight;
+                        // Burnt grass check: If grass is currently burning or burned down to ash stubble, cannot be cut with sword!
+                        int cx = Mathf.FloorToInt(pPos.x / SPATIAL_CELL_SIZE);
+                        int cz = Mathf.FloorToInt(pPos.z / SPATIAL_CELL_SIZE);
+                        long cellKey = ((long)cx << 32) | (uint)cz;
+                        if (IsCellBurnedOrBurning(cellKey)) continue;
+
                         float currentCut = layer.cutHeights[idx];
-                        if (currentCut < 0f || targetCut < currentCut)
+                        bool canCut = false;
+                        if (currentCut < 0f)
                         {
-                            layer.cutHeights[idx] = targetCut;
+                            canCut = true;
+                        }
+                        else if (regrowthMode == GrassRegrowthMode.Timer)
+                        {
+                            float elapsed = Time.time - currentCut;
+                            float animDur = Mathf.Clamp(regrowAnimationDuration, 0.1f, regrowDelaySeconds);
+                            float holdDelay = Mathf.Max(0f, regrowDelaySeconds - animDur);
+                            if (elapsed >= regrowDelaySeconds || elapsed > holdDelay + 0.2f)
+                            {
+                                canCut = true;
+                            }
+                        }
+
+                        if (canCut)
+                        {
+                            float cutTimeVal = Mathf.Max(0.001f, Time.time);
+                            layer.cutHeights[idx] = cutTimeVal;
                             layer.cutDirty = true;
                             layerCutCount++;
                             avgCutPos += pPos;
@@ -816,13 +2160,13 @@ namespace ModernGrassTool
                                 {
                                     if (Vector3.SqrMagnitude(chunk.points[cp].position - pPos) < 0.01f)
                                     {
-                                        chunk.cutHeights[cp] = targetCut;
+                                        chunk.cutHeights[cp] = cutTimeVal;
                                         break;
                                     }
                                 }
                             }
 
-                            if (regrowthMode == GrassRegrowthMode.Timer || regrowthMode == GrassRegrowthMode.Distance)
+                            if (regrowthMode == GrassRegrowthMode.Distance)
                             {
                                 _activeCuts.Add(new CutRecord
                                 {
@@ -865,7 +2209,7 @@ namespace ModernGrassTool
         {
             if (camera == null) return;
             if (camera.cameraType == CameraType.Preview || camera.cameraType == CameraType.Reflection) return;
-            if (camera.name.Contains("Baker") || camera.name.Contains("Terrain") || camera.name.Contains("Temp") || camera.name.Contains("temp")) return;
+            if (camera.name.Contains("Baker") || camera.name.Contains("Terrain") || camera.name.Contains("Temp") || camera.name.Contains("temp") || camera.name.Contains("TestCam")) return;
             if (layers == null || layers.Count == 0) return;
             if (computeShader == null || grassShader == null || _kernelIndex < 0 || _kernelResetArgs < 0)
             {
@@ -918,6 +2262,20 @@ namespace ModernGrassTool
                 _cachedCamRot = camera.transform.rotation;
                 if (drawCullingGizmos) _gizmoBounds.Clear();
             }
+
+            if (enableFireSimulation) EnsureBurnResources();
+            Texture burnTex = GetCurrentBurnMap();
+            Vector3 effCenter = (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? GetEffectivePlayerPos() : burnMapCenter;
+            var terrainBaker = EnsureTerrainBaker();
+            Vector3 camPosTerrain = terrainBaker != null ? terrainBaker.orthographicPos : transform.position;
+            float camSizeTerrain = terrainBaker != null ? Mathf.Max(1f, terrainBaker.orthographicSize) : 60f;
+            float cutAnimDuration = Mathf.Clamp(regrowAnimationDuration, 0.1f, regrowDelaySeconds);
+            Vector4 grassCutSettings = new Vector4(
+                Mathf.Max(0.1f, regrowDelaySeconds),
+                cutAnimDuration,
+                defaultStubbleHeight,
+                (float)regrowthMode
+            );
 
             for (int i = 0; i < layers.Count; i++)
             {
@@ -1112,6 +2470,27 @@ namespace ModernGrassTool
                     computeShader.SetVectorArray("_WindZoneTimes", _windZoneTimes);
                 }
 
+                // Fire, Burn & Charred Simulation
+                computeShader.SetTexture(_kernelIndex, "_GrassBurnMap", burnTex);
+                computeShader.SetFloat("_EnableGrassBurnMap", (enableFireSimulation && burnTex != null) ? 1f : 0f);
+                computeShader.SetFloat("_CanCatchFire", layer.canCatchFire ? 1f : 0f);
+                computeShader.SetVector("_CharredColor", layer.charredColor.linear);
+                computeShader.SetVector("_GrassBurnMapCenter", effCenter);
+                computeShader.SetFloat("_GrassBurnMapSize", Mathf.Max(1f, burnMapWorldSize));
+                computeShader.SetVector("_GrassBurnMapParams", new Vector4(effCenter.x, effCenter.y, effCenter.z, Mathf.Max(1f, burnMapWorldSize)));
+                computeShader.SetVector("_GrassBurnSettings", new Vector4(
+                    (enableFireSimulation && burnTex != null) ? 1f : 0f,
+                    layer.canCatchFire ? 1f : 0f,
+                    (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? 1f : 0f,
+                    0f
+                ));
+
+                computeShader.SetVector("_OrthographicCamPosTerrain", camPosTerrain);
+                computeShader.SetFloat("_OrthographicCamSizeTerrain", camSizeTerrain);
+
+                // Cutting & 100% GPU-Driven Smooth Regrowth Settings
+                computeShader.SetVector("_GrassCutSettings", grassCutSettings);
+
                 // 3. Dispatch GPU culling & blade generation
                 int threadGroups = Mathf.CeilToInt(totalBladeCount / 64f);
                 computeShader.Dispatch(_kernelIndex, threadGroups, 1, 1);
@@ -1281,6 +2660,24 @@ namespace ModernGrassTool
                 mat.SetVectorArray("_WindZoneTimes", _windZoneTimes);
             }
 
+            // Fire, Burn & Charred Simulation
+            EnsureBurnResources();
+            Texture meshBurnTex = GetCurrentBurnMap();
+            mat.SetTexture("_GrassBurnMap", meshBurnTex);
+            mat.SetFloat("_EnableGrassBurnMap", (enableFireSimulation && meshBurnTex != null) ? 1f : 0f);
+            mat.SetFloat("_CanCatchFire", layer.canCatchFire ? 1f : 0f);
+            Vector3 effCenterMesh = (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? GetEffectivePlayerPos() : burnMapCenter;
+            mat.SetColor("_CharredColor", layer.charredColor);
+            mat.SetVector("_GrassBurnMapCenter", effCenterMesh);
+            mat.SetFloat("_GrassBurnMapSize", Mathf.Max(1f, burnMapWorldSize));
+            mat.SetFloat("_GrassBurnMode", (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? 1f : 0f);
+
+            var terrainBakerMesh = EnsureTerrainBaker();
+            Vector3 camPosTerrainMesh = terrainBakerMesh != null ? terrainBakerMesh.orthographicPos : transform.position;
+            float camSizeTerrainMesh = terrainBakerMesh != null ? Mathf.Max(1f, terrainBakerMesh.orthographicSize) : 60f;
+            mat.SetVector("_OrthographicCamPosTerrain", camPosTerrainMesh);
+            mat.SetFloat("_OrthographicCamSizeTerrain", camSizeTerrainMesh);
+
             int visibleCount = layer.visibleIDs.Count;
             if (visibleCount == 0) return;
 
@@ -1299,7 +2696,17 @@ namespace ModernGrassTool
 
                 // If cut, hide custom mesh foliage (until regrown)
                 if (layer.cutHeights != null && pointIndex < layer.cutHeights.Length && layer.cutHeights[pointIndex] >= 0f)
-                    continue;
+                {
+                    if (regrowthMode == GrassRegrowthMode.Timer)
+                    {
+                        if (currentTime - layer.cutHeights[pointIndex] < regrowDelaySeconds)
+                            continue;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
 
                 GrassPoint pt = layer.points[pointIndex];
 
@@ -1345,6 +2752,13 @@ namespace ModernGrassTool
                 {
                     Gizmos.DrawWireCube(_gizmoBounds[i].center, _gizmoBounds[i].size);
                 }
+            }
+
+            if (enableFireSimulation && drawBurnGizmo)
+            {
+                Gizmos.color = new Color(1f, 0.45f, 0.1f, 0.45f);
+                Vector3 gizmoCenter = (burnMapMode == GrassBurnMapMode.PlayerCenteredFloating) ? GetEffectivePlayerPos() : burnMapCenter;
+                Gizmos.DrawWireCube(new Vector3(gizmoCenter.x, transform.position.y, gizmoCenter.z), new Vector3(burnMapWorldSize, 12f, burnMapWorldSize));
             }
         }
     }

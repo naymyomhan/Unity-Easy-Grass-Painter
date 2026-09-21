@@ -44,6 +44,7 @@ namespace ModernGrassTool.Editor
         private bool _showHeightNoiseSettings = true;
         private bool _showShadowLODSettings = false;
         private bool _showCutSettings = false;
+        private bool _showFireSettings = false;
         private bool _showGroundBlend = false;
         private bool _showInteractionSettings = false;
 
@@ -668,6 +669,39 @@ namespace ModernGrassTool.Editor
                         }
                     }
 
+                    // Fire, Burn & Charred Simulation
+                    _showFireSettings = ModernGrassUI.DrawSectionHeader("Fire, Burn & Charring", _showFireSettings, "🔥", new Color(1.0f, 0.45f, 0.15f));
+                    if (_showFireSettings)
+                    {
+                        EditorGUI.BeginChangeCheck();
+                        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                        {
+                            layer.canCatchFire = EditorGUILayout.Toggle(new GUIContent("Can Catch Fire", "If enabled, this grass species can catch fire, propagate flame to neighbors, and burn down into charred ash stubble."), layer.canCatchFire);
+                            if (layer.canCatchFire)
+                            {
+                                EditorGUI.indentLevel++;
+                                layer.burnDuration = EditorGUILayout.Slider(new GUIContent("Burn Duration (s)", "Seconds for burning grass to burn down into ash."), layer.burnDuration, 0.5f, 15.0f);
+                                layer.fireSpreadRadius = EditorGUILayout.Slider(new GUIContent("Max Spread Radius (m)", "Maximum distance in meters that fire can propagate outward from the ignition point before extinguishing."), layer.fireSpreadRadius, 0.5f, 25.0f);
+                                layer.fireSpreadSpeed = EditorGUILayout.Slider(new GUIContent("Spread Speed", "Speed multiplier at which fire propagates to neighboring grass (0.2 = slow creeping, 3.0 = fast wildfire)."), layer.fireSpreadSpeed, 0.1f, 5.0f);
+                                layer.fireMaxSpreadGap = EditorGUILayout.Slider(new GUIContent("Max Spread Gap (m)", "Maximum gap distance between grass blades beyond which fire will stop propagating."), layer.fireMaxSpreadGap, 0.1f, 5.0f);
+                                layer.charredColor = EditorGUILayout.ColorField(new GUIContent("Charred Ash Color", "Color of the burned ash stubble (defaults to deep charred black/charcoal)."), layer.charredColor);
+                                layer.fireParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField(new GUIContent("Fire Particle Prefab", "Optional custom Particle System spawned when this grass species catches fire. If empty, only shader burning is displayed."), layer.fireParticlePrefab, typeof(ParticleSystem), false);
+                                if (layer.fireParticlePrefab != null)
+                                {
+                                    layer.fireParticleDensity = EditorGUILayout.Slider(new GUIContent("Fire Particle Density", "Multiplier for fire particle emission rate (0.1 to 5.0). Higher values produce denser, thicker flames."), layer.fireParticleDensity, 0.1f, 5.0f);
+                                }
+                                EditorGUI.indentLevel--;
+                            }
+                        }
+                        if (EditorGUI.EndChangeCheck())
+                        {
+                            if (manager != null && manager.enableFireSimulation)
+                            {
+                                manager.BakeAllFuel();
+                            }
+                        }
+                    }
+
                     // Ground Blending
                     _showGroundBlend = ModernGrassUI.DrawSectionHeader("Ground Blending", _showGroundBlend, "🌍", ModernGrassUI.ColorGroundBlend);
                     if (_showGroundBlend)
@@ -976,6 +1010,11 @@ namespace ModernGrassTool.Editor
                             currentLayer.treeDirty = true;
                             currentLayer.EnsureBuffers();
                         }
+                    }
+
+                    if (manager != null && manager.enableFireSimulation)
+                    {
+                        manager.BakeAllFuel();
                     }
 
                     EditorUtility.SetDirty(manager);

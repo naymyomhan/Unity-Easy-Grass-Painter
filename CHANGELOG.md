@@ -5,6 +5,24 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-21
+
+### Added
+- **Dynamic Wildfire & Cellular Automaton Burn Simulation**:
+  - `ModernGrassBurnSim.compute` real-time 4-channel ping-pong simulation: Scorch ($R$), Flame ($G$), Fuel ($B$), and Heat ($A$).
+  - Multi-harmonic organic burn shape with wind-driven propagation and turbulent edge noise.
+  - Decoupled **Heat-Singed Perimeter Tall Grass Effect**: Outer crater/perimeter standing tall grass retains full height while developing realistic heat-singed tips and charred upper gradients.
+  - Realistic ember color calibration and dark charcoal blending under flame (suppressed neon saturation).
+  - Static APIs: `ModernGrassManager.IgniteAt(...)`, `ModernGrassManager.ScorchAt(...)`, `ModernGrassManager.ExtinguishFire(...)`, `ModernGrassManager.ResetBurnSimulation()`.
+- **Synchronized Fire VFX Node Pool**:
+  - `ModernGrassFirePool.cs` zero-allocation pooling system tracking active flame wavefront directly from simulation.
+  - Included particle prefab `GrassFire_VFX.prefab` with soft puff flame, smoke, and ember sparks.
+  - Layer-level custom fire particle prefab support (`layer.fireParticlePrefab`).
+- **Comprehensive Documentation & Architectural Guides**:
+  - `GPU_GRASS_DEVELOPMENT_ROADMAP.md`: Complete 10-phase architectural guide from procedural buffers to wildfire CA.
+  - `README_API_GUIDE.md`: Dedicated external gameplay and combat API integration handbook.
+  - Expanded Starter Presets: `BOTW_LushGreen_Preset`, `Lawn_Grass`, `Lee_Grass`, `RedAutumnGrass`, `Small_Grass`, `TallWildGrass`, `Tsushima_Pampas_Grass`.
+
 ## [1.1.0] - 2026-09-20
 
 ### Added

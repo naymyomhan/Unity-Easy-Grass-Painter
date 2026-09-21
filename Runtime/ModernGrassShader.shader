@@ -156,6 +156,15 @@ Shader "ModernGrassTool/ModernGrassShader"
                 // Base blade foliage albedo from vertex color gradient
                 float3 albedo = input.color.rgb * _BaseColor.rgb;
 
+                // When blade is burning/smoldering, suppress green foliage albedo and blend with charred black coal
+                float emberIntensity = input.color.a;
+                if (emberIntensity > 0.005)
+                {
+                    // Suppress healthy green albedo so additive red flame doesn't create neon yellow
+                    float3 darkCharcoal = float3(0.04, 0.035, 0.03);
+                    albedo = lerp(albedo, darkCharcoal, saturate(emberIntensity * 1.3));
+                }
+
                 // Blade Texture & Alpha Cutout
                 #if defined(_USE_BLADE_TEXTURE)
                     half4 texCol = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv);
@@ -309,9 +318,14 @@ Shader "ModernGrassTool/ModernGrassShader"
                         float groundNightFactor = saturate(directLuma * 2.0 + groundAmbLumaVal * 5.0);
                         float3 groundLit = groundAdj * groundNightFactor;
 
+                        // If blade is charred black, darken ground blend to match charred ash
+                        float bladeLuma = dot(input.color.rgb, float3(0.299, 0.587, 0.114));
+                        float isCharred = saturate((0.18 - bladeLuma) / 0.12);
+                        float3 groundEffective = lerp(groundLit, groundLit * 0.15, isCharred);
+
                         // Base root (verticalFade = 0) seamlessly matches the lit terrain diffuse map
                         // As blade rises (verticalFade = 1), smoothly transitions to stylized foliage lighting
-                        finalColor = lerp(groundLit, bladeLit * _AmbientAdjustmentColor.rgb, verticalFade);
+                        finalColor = lerp(groundEffective, bladeLit * _AmbientAdjustmentColor.rgb, verticalFade);
                     }
                     else
                     {
@@ -328,6 +342,22 @@ Shader "ModernGrassTool/ModernGrassShader"
                     float NdotH = saturate(dot(normalWS, halfVec));
                     float wetSpecular = pow(NdotH, 28.0) * _GlobalWeatherWetness * 0.35;
                     finalColor += mainLight.color * wetSpecular;
+                }
+
+                // Additive HDR Emissive Fire Ember Glow on burning grass blades
+                if (emberIntensity > 0.005)
+                {
+                    // High-frequency flicker + spatial crackle variance
+                    float emberNoise = sin(_Time.y * 24.0 + input.positionWS.x * 15.3 + input.positionWS.z * 17.1) * 0.35 + 0.65;
+                    float sparkNoise = frac(sin(dot(input.positionWS.xz, float2(12.9898, 78.233))) * 43758.5453);
+                    float crackle = lerp(0.65, 1.25, sparkNoise);
+
+                    // Authentic embers: deep incandescent ruby-crimson core transitioning to warm fiery amber-orange
+                    // (Zero neon yellow - balanced red/orange with charred undertones)
+                    float3 coolEmber = float3(1.1, 0.08, 0.005);   // Deep smoldering crimson/charcoal ember
+                    float3 hotEmber  = float3(1.65, 0.26, 0.02);   // Fiery warm amber-orange ember
+                    float3 fireEmissive = lerp(coolEmber, hotEmber, saturate(emberNoise * crackle)) * (emberIntensity * 0.9);
+                    finalColor += fireEmissive;
                 }
 
                 // Apply Fog

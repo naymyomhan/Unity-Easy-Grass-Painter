@@ -35,6 +35,7 @@ namespace ModernGrassTool.Editor
         private static bool _showShadowLODSettings = true;
         private static bool _showCutSettings = true;
         private static bool _showInteractionSettings = false;
+        private static bool _showFireSettings = true;
 
         private void OnEnable()
         {
@@ -332,9 +333,38 @@ namespace ModernGrassTool.Editor
                 }
             }
 
+            // 9. Fire, Burning & Charring
+            _showFireSettings = ModernGrassUI.DrawSectionHeader("Fire, Burning & Charring", _showFireSettings, "🔥", new Color(1.0f, 0.45f, 0.15f));
+            if (_showFireSettings)
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    gt.canCatchFire = EditorGUILayout.Toggle(new GUIContent("Can Catch Fire", "If enabled, this grass species can catch fire, propagate flame to neighbors, and burn down into charred ash stubble."), gt.canCatchFire);
+                    if (gt.canCatchFire)
+                    {
+                        EditorGUI.indentLevel++;
+                        gt.burnDuration = EditorGUILayout.Slider(new GUIContent("Burn Duration (s)", "Seconds for burning grass to burn down into ash."), gt.burnDuration, 0.5f, 15.0f);
+                        gt.fireSpreadRadius = EditorGUILayout.Slider(new GUIContent("Max Spread Radius (m)", "Maximum distance in meters that fire can propagate outward from the ignition point before extinguishing."), gt.fireSpreadRadius, 0.5f, 25.0f);
+                        gt.fireSpreadSpeed = EditorGUILayout.Slider(new GUIContent("Spread Speed", "Speed multiplier at which fire propagates to neighboring grass (0.2 = slow creeping, 3.0 = fast wildfire)."), gt.fireSpreadSpeed, 0.1f, 5.0f);
+                        gt.fireMaxSpreadGap = EditorGUILayout.Slider(new GUIContent("Max Spread Gap (m)", "Maximum gap distance between grass blades beyond which fire will stop propagating."), gt.fireMaxSpreadGap, 0.1f, 5.0f);
+                        gt.charredColor = EditorGUILayout.ColorField(new GUIContent("Charred Ash Color", "Color of the burned ash stubble (defaults to deep charred black/charcoal)."), gt.charredColor);
+                        gt.fireParticlePrefab = (ParticleSystem)EditorGUILayout.ObjectField(new GUIContent("Fire Particle Prefab", "Optional custom Particle System spawned when this grass species catches fire. If empty, only shader burning is displayed."), gt.fireParticlePrefab, typeof(ParticleSystem), false);
+                        if (gt.fireParticlePrefab != null)
+                        {
+                            gt.fireParticleDensity = EditorGUILayout.Slider(new GUIContent("Fire Particle Density", "Multiplier for fire particle emission rate (0.1 to 5.0). Higher values produce denser, thicker flames."), gt.fireParticleDensity, 0.1f, 5.0f);
+                        }
+                        EditorGUI.indentLevel--;
+                    }
+                }
+            }
+
             if (EditorGUI.EndChangeCheck())
             {
                 EditorUtility.SetDirty(gt);
+                if (ModernGrassManager.Instance != null && ModernGrassManager.Instance.enableFireSimulation)
+                {
+                    ModernGrassManager.Instance.BakeAllFuel();
+                }
                 SceneView.RepaintAll();
             }
 

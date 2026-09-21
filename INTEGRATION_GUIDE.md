@@ -12,6 +12,7 @@ This reference guide documents all external gameplay hooks, C# APIs, and compone
 5. [🌪️ Dynamic Wind Zones & Wind Blasts](#4-️-dynamic-wind-zones--wind-blasts)
 6. [🗺️ Open-World Chunk Streaming & Player Tracking](#5-️-open-world-chunk-streaming--player-tracking)
 7. [🌍 Ground Blending & Runtime Terrain Baker](#6--ground-blending--runtime-terrain-baker)
+8. [🔥 Wildfire, Ignite & Scorch Mechanics (Torches, Bombs, Spells)](#7--wildfire-ignite--scorch-mechanics-torches-bombs-spells)
 
 ---
 
@@ -275,7 +276,65 @@ baker?.SetupAndBake();
 
 ---
 
+## 7. 🔥 Wildfire, Ignite & Scorch Mechanics (Torches, Bombs, Spells)
+Simulates dynamic spreading wildfire, glowing ember blazes, and instant ground scorch craters on the GPU with synchronized Fire VFX.
+
+### Method A: Spreading Wildfire (Torches, Molotovs, Fire Spells)
+Ignites an active flame front that consumes grass fuel, glows with realistic amber embers, and spreads downwind organically:
+
+```csharp
+using UnityEngine;
+using ModernGrassTool;
+
+public class TorchWeapon : MonoBehaviour
+{
+    public void ApplyFlameContact(Vector3 contactPoint)
+    {
+        // Ignites grass with spreading wildfire within 1.8m
+        ModernGrassManager.IgniteAt(contactPoint, radius: 1.8f);
+    }
+}
+```
+
+### Method B: Scorch-Only Crater (Explosions, Non-Fire Bombs, Plasma)
+Instantly chars and cuts grass in a crater without leaving active fire particles:
+
+```csharp
+using UnityEngine;
+using ModernGrassTool;
+
+public class FragGrenade : MonoBehaviour
+{
+    public void OnExplode(Vector3 explosionPos)
+    {
+        // 1. Shave grass blades down to flat stubble
+        ModernGrassManager.CutGrassAt(explosionPos, radius: 2.2f, stubbleHeight: 0.12f);
+
+        // 2. Scorch grass black with heat-singed outer perimeter
+        ModernGrassManager.ScorchAt(explosionPos, radius: 2.8f, intensity: 1.0f);
+
+        // 3. Trigger violent physical shockwave
+        ModernGrassManager.TriggerShockwave(explosionPos, radius: 10f, force: 2.2f);
+    }
+}
+```
+
+### Water & Rain Extinguish API
+To put out active wildfires when it rains or when water spells hit:
+
+```csharp
+// Extinguish fire within a localized splash radius
+ModernGrassManager.ExtinguishFire(splashPoint, radius: 4.0f);
+
+// Or reset the entire burn simulation across the entire field
+ModernGrassManager.ResetBurnSimulation();
+```
+
+---
+
 ## 💡 Best Practices & Performance Tips
-1. **Zero Allocations**: All shockwaves, wind zones, and interactors use GPU constant buffers in L1 cache ($0\text{ B}$ GC allocations per frame).
+1. **Zero Allocations**: All shockwaves, wind zones, interactors, and fire VFX pools use GPU constant buffers and pre-allocated pools ($0\text{ B}$ GC allocations per frame).
 2. **Layer Interactivity**: For decorative or background grass layers (such as cliff flowers), keep `Enable Interaction` disabled to maximize GPU throughput.
 3. **Layer Cutting**: Toggle `Can Be Cut` off for rigid obstacles, tree moss, or shrub layers.
+4. **Fire VFX Customization**: Assign custom particle systems per layer in the Grass Type inspector (`fireParticlePrefab`), or leave blank to inherit the global `defaultFireParticlePrefab`.
+

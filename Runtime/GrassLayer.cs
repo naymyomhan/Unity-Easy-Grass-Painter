@@ -70,6 +70,16 @@ namespace ModernGrassTool
         [SerializeField] private int _minSegmentCount = 1;
         [SerializeField] private int _cullingTreeDepth = 4;
 
+        // Fire, Burning & Charring
+        [SerializeField] private bool _canCatchFire = true;
+        [SerializeField] private float _burnDuration = 2.5f;
+        [SerializeField] private float _fireSpreadRadius = 3.5f;
+        [SerializeField] private float _fireSpreadSpeed = 1.0f;
+        [SerializeField] private float _fireMaxSpreadGap = 0.8f;
+        [SerializeField] private Color _charredColor = new Color(0.08f, 0.08f, 0.08f, 1f);
+        [SerializeField] private ParticleSystem _fireParticlePrefab;
+        [SerializeField] private float _fireParticleDensity = 1.0f;
+
         // Player & Object Interaction
         [SerializeField] private bool _enableInteraction = false;
         [SerializeField] private float _elasticOscillation = 0.5f;
@@ -153,6 +163,14 @@ namespace ModernGrassTool
         public float bladeShadowStrength { get => grassType != null ? grassType.bladeShadowStrength : _bladeShadowStrength; set { if (grassType != null) grassType.bladeShadowStrength = value; else _bladeShadowStrength = value; } }
         public bool canBeCut { get => grassType != null ? grassType.canBeCut : _canBeCut; set { if (grassType != null) grassType.canBeCut = value; else _canBeCut = value; } }
         public ParticleSystem cutParticlePrefab { get => grassType != null ? grassType.cutParticlePrefab : _cutParticlePrefab; set { if (grassType != null) grassType.cutParticlePrefab = value; else _cutParticlePrefab = value; } }
+        public bool canCatchFire { get => grassType != null ? grassType.canCatchFire : _canCatchFire; set { if (grassType != null) grassType.canCatchFire = value; else _canCatchFire = value; } }
+        public float burnDuration { get => grassType != null ? grassType.burnDuration : _burnDuration; set { if (grassType != null) grassType.burnDuration = value; else _burnDuration = value; } }
+        public float fireSpreadRadius { get => grassType != null ? grassType.fireSpreadRadius : _fireSpreadRadius; set { if (grassType != null) grassType.fireSpreadRadius = value; else _fireSpreadRadius = value; } }
+        public float fireSpreadSpeed { get => grassType != null ? grassType.fireSpreadSpeed : _fireSpreadSpeed; set { if (grassType != null) grassType.fireSpreadSpeed = value; else _fireSpreadSpeed = value; } }
+        public float fireMaxSpreadGap { get => grassType != null ? grassType.fireMaxSpreadGap : _fireMaxSpreadGap; set { if (grassType != null) grassType.fireMaxSpreadGap = value; else _fireMaxSpreadGap = value; } }
+        public Color charredColor { get => grassType != null ? grassType.charredColor : _charredColor; set { if (grassType != null) grassType.charredColor = value; else _charredColor = value; } }
+        public ParticleSystem fireParticlePrefab { get => grassType != null ? grassType.fireParticlePrefab : _fireParticlePrefab; set { if (grassType != null) grassType.fireParticlePrefab = value; else _fireParticlePrefab = value; } }
+        public float fireParticleDensity { get => grassType != null ? grassType.fireParticleDensity : _fireParticleDensity; set { if (grassType != null) grassType.fireParticleDensity = value; else _fireParticleDensity = value; } }
         public float windStrength { get => grassType != null ? grassType.windStrength : _windStrength; set { if (grassType != null) grassType.windStrength = value; else _windStrength = value; } }
         public float windSpeed { get => grassType != null ? grassType.windSpeed : _windSpeed; set { if (grassType != null) grassType.windSpeed = value; else _windSpeed = value; } }
         public float windScale { get => grassType != null ? grassType.windScale : _windScale; set { if (grassType != null) grassType.windScale = value; else _windScale = value; } }

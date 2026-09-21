@@ -132,7 +132,7 @@ namespace ModernGrassTool
             }
             if (fallbackMat == null)
             {
-                fallbackMat = UnityEditor.AssetDatabase.LoadAssetAtPath<Material>("Assets/ModernGrassTool/Prefabs/GrassCutParticle_Material.mat");
+                fallbackMat = UnityEditor.AssetDatabase.LoadAssetAtPath<Material>("Assets/VFX/GrassCut/GrassCutParticle_Material.mat");
             }
 #endif
             if (fallbackMat != null)

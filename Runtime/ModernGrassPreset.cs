@@ -78,6 +78,16 @@ namespace ModernGrassTool
         public bool enableInteraction = false;
         [Range(0.0f, 10.0f)] public float elasticOscillation = 1.0f;
 
+        [Header("Fire, Burning & Charring")]
+        public bool canCatchFire = true;
+        [Range(0.5f, 10f)] public float burnDuration = 2.5f;
+        [Range(0.5f, 25f)] public float fireSpreadRadius = 3.5f;
+        [Range(0.1f, 5f)] public float fireSpreadSpeed = 1.0f;
+        [Range(0.2f, 5f)] public float fireMaxSpreadGap = 0.8f;
+        public Color charredColor = new Color(0.08f, 0.08f, 0.08f, 1f);
+        public ParticleSystem fireParticlePrefab;
+        [Range(0.1f, 5.0f)] public float fireParticleDensity = 1.0f;
+
         public void ApplyTo(GrassLayer layer)
         {
             if (layer == null) return;
@@ -115,6 +125,15 @@ namespace ModernGrassTool
 
             layer.canBeCut = canBeCut;
             layer.cutParticlePrefab = cutParticlePrefab;
+
+            layer.canCatchFire = canCatchFire;
+            layer.burnDuration = burnDuration;
+            layer.fireSpreadRadius = fireSpreadRadius;
+            layer.fireSpreadSpeed = fireSpreadSpeed;
+            layer.fireMaxSpreadGap = fireMaxSpreadGap;
+            layer.charredColor = charredColor;
+            layer.fireParticlePrefab = fireParticlePrefab;
+            layer.fireParticleDensity = fireParticleDensity;
 
             layer.windStrength = windStrength;
             layer.windSpeed = windSpeed;
@@ -208,6 +227,15 @@ namespace ModernGrassTool
 
             enableInteraction = layer.enableInteraction;
             elasticOscillation = layer.elasticOscillation;
+
+            canCatchFire = layer.canCatchFire;
+            burnDuration = layer.burnDuration;
+            fireSpreadRadius = layer.fireSpreadRadius;
+            fireSpreadSpeed = layer.fireSpreadSpeed;
+            fireMaxSpreadGap = layer.fireMaxSpreadGap;
+            charredColor = layer.charredColor;
+            fireParticlePrefab = layer.fireParticlePrefab;
+            fireParticleDensity = layer.fireParticleDensity;
         }
     }
 }
